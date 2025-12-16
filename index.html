@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Diagram Editor</title>
+  <link rel="stylesheet" href="/src/styles/main.css">
+</head>
+<body>
+  <!-- AI Loading Modal -->
+  <div class="ai-loading-modal" id="aiLoadingModal">
+    <div class="ai-loading-content">
+      <div class="ai-loading-spinner">
+        <div class="spinner-ring"></div>
+        <div class="spinner-ring"></div>
+        <div class="spinner-ring"></div>
+      </div>
+      <div class="ai-loading-text">AI가 다이어그램을 생성중입니다</div>
+      <div class="ai-loading-bar">
+        <div class="ai-loading-bar-inner"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="app">
+    <div class="toolbar" id="toolbar"></div>
+    <div class="main-container">
+      <div class="session-sidebar" id="sessionSidebar">
+        <div class="sidebar-header">
+          <button class="new-diagram-btn" id="newDiagramBtn">+ New Diagram</button>
+          <button class="sidebar-close-btn" id="sidebarCloseBtn" title="Close Sidebar">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <line x1="9" y1="3" x2="9" y2="21"/>
+            </svg>
+          </button>
+        </div>
+        <div class="session-list" id="sessionList"></div>
+      </div>
+      <div class="sidebar-expand-btn" id="sidebarExpandBtn" title="Open Sidebar">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="18" height="18" rx="2"/>
+          <line x1="9" y1="3" x2="9" y2="21"/>
+        </svg>
+      </div>
+      <div class="canvas-wrapper" id="canvasWrapper">
+        <div class="canvas" id="canvas">
+          <svg class="svg-layer" id="svgLayer"></svg>
+          <svg class="svg-layer svg-overlay" id="svgOverlay"></svg>
+        </div>
+      </div>
+      <div class="props-panel" id="propsPanel">
+        <h3>Properties</h3>
+        <div id="propsContent">
+          <p class="placeholder">Select an element</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
