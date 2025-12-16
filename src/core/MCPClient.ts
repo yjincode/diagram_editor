@@ -40,14 +40,11 @@ export class MCPClient extends EventEmitter {
       await fetch(`${API_BASE}/ws-start`, { method: 'POST' });
     } catch (e) {
       // HTTP 서버가 없어도 MCP가 WebSocket을 자동 시작하므로 무시
-      console.log('[MCP] HTTP API 사용 불가 - MCP WebSocket 자동 시작 모드');
     }
 
-    console.log('[MCP] WebSocket 연결 시도...');
     this.ws = new WebSocket(WS_URL);
 
     this.ws.onopen = () => {
-      console.log('[MCP] WebSocket 연결됨');
       this.reconnectAttempts = 0;
     };
 
@@ -58,16 +55,12 @@ export class MCPClient extends EventEmitter {
         const message = JSON.parse(event.data);
 
         if (message.type === 'loadingStart') {
-          console.log('[MCP] AI 다이어그램 생성 시작');
           this.showLoadingModal();
         } else if (message.type === 'loadingEnd') {
-          console.log('[MCP] AI 다이어그램 생성 완료');
           this.hideLoadingModal();
         } else if (message.type === 'diagram') {
           const data = message.data;
           this.isSyncingFromServer = true;
-
-          console.log('[MCP] 서버에서 데이터 수신:', data.elements?.length || 0, '개 요소');
 
           // 세션 정보가 있으면 state에 설정
           if (data.sessionId) {
@@ -75,7 +68,6 @@ export class MCPClient extends EventEmitter {
               id: data.sessionId,
               title: data.sessionTitle || ''
             });
-            console.log('[MCP] 세션 정보 업데이트:', data.sessionId, data.sessionTitle);
           }
 
           const result = this.state.fromJSON(JSON.stringify({
@@ -87,9 +79,16 @@ export class MCPClient extends EventEmitter {
           }
           this.state.expandCanvasToFitElements();
 
+          // 데이터 수신 후 캐시 저장을 위해 이벤트 발생
+          this.emit('dataReceived', {
+            sessionId: data.sessionId,
+            sessionTitle: data.sessionTitle,
+            elements: data.elements,
+            canvasSize: data.canvasSize
+          });
+
           this.isSyncingFromServer = false;
         } else if (message.type === 'sessionListChange') {
-          console.log('[MCP] 세션 목록 변경 알림 수신');
           this.emit('sessionListChange');
         }
       } catch (error) {
@@ -99,19 +98,17 @@ export class MCPClient extends EventEmitter {
     };
 
     this.ws.onclose = () => {
-      console.log('[MCP] WebSocket 연결 종료');
       this.ws = null;
 
       // 자동 재연결 시도
       if (this.reconnectAttempts < this.maxReconnectAttempts) {
         this.reconnectAttempts++;
-        console.log(`[MCP] ${this.reconnectDelay}ms 후 재연결 시도 (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
         setTimeout(() => this.connectWebSocket(), this.reconnectDelay);
       }
     };
 
-    this.ws.onerror = (error) => {
-      console.warn('[MCP] WebSocket 오류:', error);
+    this.ws.onerror = () => {
+      // WebSocket 오류 무시
     };
   }
 
@@ -120,7 +117,6 @@ export class MCPClient extends EventEmitter {
     if (this.ws) {
       this.ws.close();
       this.ws = null;
-      console.log('[MCP] WebSocket 연결 해제');
     }
   }
 

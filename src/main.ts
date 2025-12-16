@@ -35,8 +35,12 @@ class DiagramEditor {
 
     // MCP에서 세션 목록 변경 시 사이드바 업데이트
     this.mcpClient.on('sessionListChange', () => {
-      console.log('[DiagramEditor] MCP 세션 목록 변경 -> 사이드바 새로고침');
       this.sessionSidebar.refreshSessions();
+    });
+
+    // MCP에서 데이터 수신 시 캐시에 저장
+    this.mcpClient.on('dataReceived', () => {
+      this.sessionManager.saveReceivedDataToCache();
     });
 
     // Initial render (empty canvas)
@@ -45,8 +49,7 @@ class DiagramEditor {
     // Save initial state to history
     this.state.saveToHistory();
 
-    // SSE로 MCP 서버와 실시간 동기화
-    console.log('[DiagramEditor] MCP 서버 SSE 연결 시작...');
+    // MCP 서버와 실시간 동기화
     this.mcpClient.connectSSE();
 
     // Initialize session (load most recent or create new)
@@ -54,9 +57,7 @@ class DiagramEditor {
   }
 
   private async initializeSession(): Promise<void> {
-    console.log('[DiagramEditor] 세션 초기화...');
     await this.sessionManager.initialize();
-    console.log('[DiagramEditor] 세션 초기화 완료');
   }
 }
 

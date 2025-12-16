@@ -1311,6 +1311,12 @@ cd ${EDITOR_DIR} && npm run dev
       // 로딩 시작 알림
       notifyLoadingStart();
 
+      // 기존 세션이 있고 요소가 있으면 먼저 저장
+      if (currentSessionId && diagram.elements.length > 0) {
+        await saveDiagramToCache();
+        console.error(`[Session] 기존 세션 저장 완료: ${currentSessionId}`);
+      }
+
       // 새 세션 생성
       currentSessionId = generateSessionId();
       currentSessionTitle = getDefaultSessionTitle();
@@ -1324,7 +1330,7 @@ cd ${EDITOR_DIR} && npm run dev
       };
       idCounter = 0;
 
-      // 세션 저장 및 클라이언트에 알림
+      // 새 세션 저장 및 클라이언트에 알림
       await saveDiagramToCache();
       notifyClientsWithSession();
       notifySessionListChange();
@@ -1762,6 +1768,16 @@ cd ${EDITOR_DIR} && npm run dev
       // 로딩 시작 알림
       notifyLoadingStart();
 
+      // 기존 세션이 있고 요소가 있으면 먼저 저장
+      if (currentSessionId && diagram.elements.length > 0) {
+        await saveDiagramToCache();
+        console.error(`[Session] 기존 세션 저장 완료: ${currentSessionId}`);
+      }
+
+      // 새 세션 생성
+      currentSessionId = generateSessionId();
+      currentSessionTitle = getDefaultSessionTitle();
+
       // Reset diagram
       diagram = {
         elements: [],
@@ -1889,7 +1905,10 @@ cd ${EDITOR_DIR} && npm run dev
         diagram.elements.push(note as Note);
       });
 
-      notifyClients();
+      // 새 세션 저장 및 클라이언트에 알림
+      await saveDiagramToCache();
+      notifyClientsWithSession();
+      notifySessionListChange();
 
       // 로딩 완료 알림
       notifyLoadingEnd();
@@ -1897,7 +1916,7 @@ cd ${EDITOR_DIR} && npm run dev
       return {
         content: [{
           type: "text",
-          text: `다이어그램이 구축되었습니다!\n- Zone: ${zones.length}개\n- Component: ${components.length}개\n- Arrow: ${arrows.length}개\n- Note: ${notes.length}개\n\n💡 open_editor로 브라우저에서 확인하세요.`
+          text: `다이어그램이 구축되었습니다!\n- Zone: ${zones.length}개\n- Component: ${components.length}개\n- Arrow: ${arrows.length}개\n- Note: ${notes.length}개\n- 세션 ID: ${currentSessionId}\n\n💡 open_editor로 브라우저에서 확인하세요.`
         }]
       };
     }
@@ -2443,12 +2462,25 @@ app.get("/api/session/current", (req, res) => {
   });
 });
 
-// Set current session info
-app.put("/api/session/current", (req, res) => {
-  const { sessionId, sessionTitle } = req.body;
-  if (sessionId !== undefined) currentSessionId = sessionId;
-  if (sessionTitle !== undefined) currentSessionTitle = sessionTitle;
-  res.json({ success: true, sessionId: currentSessionId, sessionTitle: currentSessionTitle });
+// Set current session info (세션 전환 시 현재 세션 먼저 저장)
+app.put("/api/session/current", async (req, res) => {
+  try {
+    const { sessionId, sessionTitle } = req.body;
+
+    // 세션 전환 시 현재 세션을 먼저 저장
+    if (sessionId !== undefined && currentSessionId && currentSessionId !== sessionId) {
+      await saveDiagramToCache();
+      console.error(`[Session] 기존 세션 저장 완료: ${currentSessionId}`);
+    }
+
+    if (sessionId !== undefined) currentSessionId = sessionId;
+    if (sessionTitle !== undefined) currentSessionTitle = sessionTitle;
+
+    res.json({ success: true, sessionId: currentSessionId, sessionTitle: currentSessionTitle });
+  } catch (error) {
+    console.error('[Session] 세션 전환 중 오류:', error);
+    res.status(500).json({ error: 'Failed to switch session' });
+  }
 });
 
 // Start HTTP server with error handling

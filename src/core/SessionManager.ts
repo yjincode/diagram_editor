@@ -129,7 +129,6 @@ export class SessionManager extends EventEmitter {
       this.cacheSessionList(sessions);
       return sessions;
     } catch (error) {
-      console.log('[SessionManager] 서버 연결 실패, localStorage에서 로드');
       this.isServerAvailable = false;
       return this.getCachedSessionList();
     }
@@ -161,9 +160,38 @@ export class SessionManager extends EventEmitter {
       const data: Record<string, SessionData> = dataStr ? JSON.parse(dataStr) : {};
       data[session.id] = session;
       localStorage.setItem(SESSIONS_DATA_KEY, JSON.stringify(data));
+      console.log('[캐시저장됨] 세션:', session.id, '요소:', session.elements.length, '개');
     } catch (e) {
       console.warn('Failed to cache session data:', e);
     }
+  }
+
+  // MCP 웹소켓에서 받은 데이터를 캐시에 저장 (외부 호출용)
+  saveReceivedDataToCache(): void {
+    if (!this.state.sessionId || this.state.elements.size === 0) return;
+
+    const now = new Date().toISOString();
+    const sessionData = this.state.toSessionJSON();
+    sessionData.lastSavedAt = now;
+
+    // localStorage에 저장
+    this.cacheSessionData(sessionData);
+
+    // 세션 목록 업데이트
+    const cachedList = this.getCachedSessionList();
+    const idx = cachedList.findIndex(s => s.id === sessionData.id);
+    if (idx >= 0) {
+      cachedList[idx].lastSavedAt = now;
+    } else {
+      // 새 세션이면 목록에 추가
+      cachedList.unshift({
+        id: sessionData.id,
+        title: sessionData.title,
+        createdAt: sessionData.createdAt || now,
+        lastSavedAt: now
+      });
+    }
+    this.cacheSessionList(cachedList);
   }
 
   // localStorage에서 세션 데이터 가져오기
@@ -198,6 +226,12 @@ export class SessionManager extends EventEmitter {
   // Load a specific session
   async loadSession(id: string): Promise<boolean> {
     this.cancelScheduledSave();
+
+    // 현재 세션이 있고 요소가 있으면 먼저 저장
+    if (this.state.sessionId && this.state.sessionId !== id && this.hasElements()) {
+      this.saveReceivedDataToCache();
+    }
+
     let session: SessionData | null = null;
 
     // 서버에서 먼저 시도
@@ -215,7 +249,6 @@ export class SessionManager extends EventEmitter {
         }
       }
     } catch (error) {
-      console.log('[SessionManager] 서버에서 세션 로드 실패, localStorage 시도');
       this.isServerAvailable = false;
     }
 
@@ -257,8 +290,7 @@ export class SessionManager extends EventEmitter {
       // Save current session first if it has elements
       if (this.state.sessionId && this.hasElements()) {
         this.cancelScheduledSave();
-        await this.saveCurrentSession();
-        console.log('[SessionManager] 기존 세션 저장 완료:', this.state.sessionId);
+        this.saveReceivedDataToCache();
       }
 
       // Clear state for new session
@@ -286,7 +318,6 @@ export class SessionManager extends EventEmitter {
         serverSuccess = response.ok;
         this.isServerAvailable = serverSuccess;
       } catch (e) {
-        console.log('[SessionManager] 서버 연결 실패, localStorage에만 저장');
         this.isServerAvailable = false;
       }
 
@@ -354,7 +385,6 @@ export class SessionManager extends EventEmitter {
       });
       this.isServerAvailable = response.ok;
     } catch (error) {
-      console.log('[SessionManager] 서버 저장 실패, localStorage에만 저장됨');
       this.isServerAvailable = false;
     }
 
@@ -375,7 +405,7 @@ export class SessionManager extends EventEmitter {
         signal: AbortSignal.timeout(2000)
       });
     } catch (error) {
-      console.log('[SessionManager] 서버 삭제 실패, localStorage에서만 삭제됨');
+      // 서버 삭제 실패 무시 - localStorage에서는 삭제됨
     }
 
     // If deleted session is current, create new session
@@ -414,7 +444,7 @@ export class SessionManager extends EventEmitter {
         signal: AbortSignal.timeout(2000)
       });
     } catch (error) {
-      console.log('[SessionManager] 서버 제목 업데이트 실패');
+      // 서버 제목 업데이트 실패 무시
     }
 
     this.emit('sessionTitleChange', title);
@@ -443,7 +473,6 @@ export class SessionManager extends EventEmitter {
       // 세션이 없지만 이미 MCP 서버에서 받은 데이터가 있으면
       // 데이터를 보존하면서 세션 메타데이터만 설정
       if (this.state.elements.size > 0) {
-        console.log('[SessionManager] MCP 데이터가 있어서 세션 메타데이터만 설정');
         await this.createSessionForExistingData();
       } else {
         // Create new session if none exist
