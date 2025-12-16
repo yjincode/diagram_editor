@@ -1,0 +1,5 @@
+{
+  "httpPort": 51001,
+  "wsPort": 51002,
+  "editorPort": 51173
+}

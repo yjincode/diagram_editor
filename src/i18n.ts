@@ -125,6 +125,15 @@ export interface Translations {
   shortcutDragSelectDesc: string;
   shortcutSelectArrowsDesc: string;
 
+  // Shortcuts Help - Grid/Snap
+  shortcutGridSnap: string;
+  gridShowDesc: string;
+  gridSnapDesc: string;
+
+  // Shortcuts Help - Tabs
+  tabMac: string;
+  tabWindows: string;
+
   // Language
   language: string;
   korean: string;
@@ -264,6 +273,15 @@ const ko: Translations = {
   shortcutDragSelectDesc: '드래그로 영역 선택',
   shortcutSelectArrowsDesc: '화살표 편집 모드 토글',
 
+  // Shortcuts Help - Grid/Snap
+  shortcutGridSnap: '눈금 & 스냅',
+  gridShowDesc: '캔버스 눈금 표시/숨김',
+  gridSnapDesc: '요소를 눈금에 맞춰 자동 정렬',
+
+  // Shortcuts Help - Tabs
+  tabMac: 'Mac',
+  tabWindows: 'Windows',
+
   // Language
   language: '언어',
   korean: '한국어',
@@ -402,6 +420,15 @@ const en: Translations = {
   shortcutShiftClickDesc: 'Add/Remove from Selection',
   shortcutDragSelectDesc: 'Drag to Select Area',
   shortcutSelectArrowsDesc: 'Toggle Arrow Edit Mode',
+
+  // Shortcuts Help - Grid/Snap
+  shortcutGridSnap: 'Grid & Snap',
+  gridShowDesc: 'Show/hide canvas grid',
+  gridSnapDesc: 'Auto-align elements to grid',
+
+  // Shortcuts Help - Tabs
+  tabMac: 'Mac',
+  tabWindows: 'Windows',
 
   // Language
   language: 'Language',

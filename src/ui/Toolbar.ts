@@ -366,57 +366,102 @@ export class Toolbar {
   private showShortcutsHelp(): void {
     const t = i18n.t;
     const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-    const cmd = isMac ? '⌘' : 'Ctrl';
 
-    this.createModal(t.shortcutsHelp, `
-      <div class="shortcuts-grid">
-        <div class="shortcuts-section">
-          <h4>${t.shortcutGeneral}</h4>
-          <div class="shortcut-row"><kbd>${cmd}</kbd><kbd>Z</kbd><span>${t.shortcutUndoDesc}</span></div>
-          <div class="shortcut-row"><kbd>${cmd}</kbd><kbd>⇧</kbd><kbd>Z</kbd><span>${t.shortcutRedoDesc}</span></div>
-          <div class="shortcut-row"><kbd>${cmd}</kbd><kbd>C</kbd><span>${t.shortcutCopyDesc}</span></div>
-          <div class="shortcut-row"><kbd>${cmd}</kbd><kbd>V</kbd><span>${t.shortcutPasteDesc}</span></div>
-          <div class="shortcut-row"><kbd>Delete</kbd><span>${t.shortcutDeleteDesc}</span></div>
-          <div class="shortcut-row"><kbd>${cmd}</kbd><kbd>A</kbd><span>${t.shortcutSelectAllDesc}</span></div>
-          <div class="shortcut-row"><kbd>Esc</kbd><span>${t.shortcutEscapeDesc}</span></div>
-        </div>
+    const generateShortcutsContent = (os: 'mac' | 'windows') => {
+      const cmd = os === 'mac' ? '⌘' : 'Ctrl';
+      const del = os === 'mac' ? 'Delete' : 'Del';
 
-        <div class="shortcuts-section">
-          <h4>${t.shortcutTools}</h4>
-          <div class="shortcut-row"><kbd>V</kbd><span>${t.shortcutSelectToolDesc}</span></div>
-          <div class="shortcut-row"><kbd>H</kbd><span>${t.shortcutPanToolDesc}</span></div>
-          <div class="shortcut-row"><kbd>A</kbd><span>${t.shortcutArrowToolDesc}</span></div>
-          <div class="shortcut-row"><kbd>G</kbd><span>${t.shortcutGridDesc}</span></div>
-        </div>
+      return `
+        <div class="shortcuts-grid">
+          <div class="shortcuts-section">
+            <h4>${t.shortcutGeneral}</h4>
+            <div class="shortcut-row"><kbd>${cmd}</kbd><kbd>Z</kbd><span>${t.shortcutUndoDesc}</span></div>
+            <div class="shortcut-row"><kbd>${cmd}</kbd><kbd>⇧</kbd><kbd>Z</kbd><span>${t.shortcutRedoDesc}</span></div>
+            <div class="shortcut-row"><kbd>${cmd}</kbd><kbd>C</kbd><span>${t.shortcutCopyDesc}</span></div>
+            <div class="shortcut-row"><kbd>${cmd}</kbd><kbd>V</kbd><span>${t.shortcutPasteDesc}</span></div>
+            <div class="shortcut-row"><kbd>${del}</kbd><span>${t.shortcutDeleteDesc}</span></div>
+            <div class="shortcut-row"><kbd>${cmd}</kbd><kbd>A</kbd><span>${t.shortcutSelectAllDesc}</span></div>
+            <div class="shortcut-row"><kbd>Esc</kbd><span>${t.shortcutEscapeDesc}</span></div>
+          </div>
 
-        <div class="shortcuts-section">
-          <h4>${t.shortcutElements}</h4>
-          <div class="shortcut-row"><kbd>Z</kbd><span>${t.shortcutZoneDesc}</span></div>
-          <div class="shortcut-row"><kbd>C</kbd><span>${t.shortcutComponentDesc}</span></div>
-          <div class="shortcut-row"><kbd>N</kbd><span>${t.shortcutNoteDesc}</span></div>
-          <div class="shortcut-row"><kbd>S</kbd><span>${t.shortcutScenarioDesc}</span></div>
-        </div>
+          <div class="shortcuts-section">
+            <h4>${t.shortcutTools}</h4>
+            <div class="shortcut-row"><kbd>V</kbd><span>${t.shortcutSelectToolDesc}</span></div>
+            <div class="shortcut-row"><kbd>H</kbd><span>${t.shortcutPanToolDesc}</span></div>
+            <div class="shortcut-row"><kbd>A</kbd><span>${t.shortcutArrowToolDesc}</span></div>
+            <div class="shortcut-row"><kbd>G</kbd><span>${t.shortcutGridDesc}</span></div>
+          </div>
 
-        <div class="shortcuts-section">
-          <h4>${t.shortcutView}</h4>
-          <div class="shortcut-row"><kbd>${cmd}</kbd><kbd>+</kbd><span>${t.shortcutZoomInDesc}</span></div>
-          <div class="shortcut-row"><kbd>${cmd}</kbd><kbd>-</kbd><span>${t.shortcutZoomOutDesc}</span></div>
-          <div class="shortcut-row"><kbd>${cmd}</kbd><kbd>0</kbd><span>${t.shortcutZoomResetDesc}</span></div>
-          <div class="shortcut-row"><kbd>↑↓←→</kbd><span>${t.shortcutArrowMoveDesc}</span></div>
-          <div class="shortcut-row"><kbd>⇧</kbd><kbd>↑↓←→</kbd><span>${t.shortcutArrowMoveFastDesc}</span></div>
-        </div>
+          <div class="shortcuts-section">
+            <h4>${t.shortcutElements}</h4>
+            <div class="shortcut-row"><kbd>Z</kbd><span>${t.shortcutZoneDesc}</span></div>
+            <div class="shortcut-row"><kbd>C</kbd><span>${t.shortcutComponentDesc}</span></div>
+            <div class="shortcut-row"><kbd>N</kbd><span>${t.shortcutNoteDesc}</span></div>
+            <div class="shortcut-row"><kbd>S</kbd><span>${t.shortcutScenarioDesc}</span></div>
+          </div>
 
-        <div class="shortcuts-section">
-          <h4>${t.shortcutSelection}</h4>
-          <div class="shortcut-row"><kbd>⇧</kbd><kbd>Click</kbd><span>${t.shortcutShiftClickDesc}</span></div>
-          <div class="shortcut-row"><kbd>Drag</kbd><span>${t.shortcutDragSelectDesc}</span></div>
-          <div class="shortcut-row"><kbd>A</kbd><span>${t.shortcutSelectArrowsDesc}</span></div>
+          <div class="shortcuts-section">
+            <h4>${t.shortcutView}</h4>
+            <div class="shortcut-row"><kbd>${cmd}</kbd><kbd>+</kbd><span>${t.shortcutZoomInDesc}</span></div>
+            <div class="shortcut-row"><kbd>${cmd}</kbd><kbd>-</kbd><span>${t.shortcutZoomOutDesc}</span></div>
+            <div class="shortcut-row"><kbd>${cmd}</kbd><kbd>0</kbd><span>${t.shortcutZoomResetDesc}</span></div>
+            <div class="shortcut-row"><kbd>↑↓←→</kbd><span>${t.shortcutArrowMoveDesc}</span></div>
+            <div class="shortcut-row"><kbd>⇧</kbd><kbd>↑↓←→</kbd><span>${t.shortcutArrowMoveFastDesc}</span></div>
+          </div>
+
+          <div class="shortcuts-section">
+            <h4>${t.shortcutSelection}</h4>
+            <div class="shortcut-row"><kbd>⇧</kbd><kbd>Click</kbd><span>${t.shortcutShiftClickDesc}</span></div>
+            <div class="shortcut-row"><kbd>Drag</kbd><span>${t.shortcutDragSelectDesc}</span></div>
+            <div class="shortcut-row"><kbd>A</kbd><span>${t.shortcutSelectArrowsDesc}</span></div>
+          </div>
+
+          <div class="shortcuts-section">
+            <h4>${t.shortcutGridSnap}</h4>
+            <div class="shortcut-row"><span class="grid-desc">📐 ${t.gridShow}</span><span>${t.gridShowDesc}</span></div>
+            <div class="shortcut-row"><span class="grid-desc">🧲 ${t.gridSnap}</span><span>${t.gridSnapDesc}</span></div>
+          </div>
         </div>
+      `;
+    };
+
+    const modal = this.createModal(t.shortcutsHelp, `
+      <div class="shortcuts-tabs">
+        <button class="shortcuts-tab ${isMac ? 'active' : ''}" data-tab="mac">🍎 ${t.tabMac}</button>
+        <button class="shortcuts-tab ${!isMac ? 'active' : ''}" data-tab="windows">🪟 ${t.tabWindows}</button>
+      </div>
+      <div class="shortcuts-tab-content" data-content="mac" ${isMac ? '' : 'style="display:none"'}>
+        ${generateShortcutsContent('mac')}
+      </div>
+      <div class="shortcuts-tab-content" data-content="windows" ${!isMac ? '' : 'style="display:none"'}>
+        ${generateShortcutsContent('windows')}
       </div>
       <div class="modal-actions">
         <button class="toolbar-btn primary" data-modal-action="close">${t.close}</button>
       </div>
     `);
+
+    // Tab switching logic
+    const tabs = modal.querySelectorAll('.shortcuts-tab');
+    const contents = modal.querySelectorAll('.shortcuts-tab-content');
+
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        const targetTab = (tab as HTMLElement).dataset.tab;
+
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+
+        contents.forEach(content => {
+          const contentElement = content as HTMLElement;
+          if (contentElement.dataset.content === targetTab) {
+            contentElement.style.display = '';
+          } else {
+            contentElement.style.display = 'none';
+          }
+        });
+      });
+    });
   }
 
   private toggleExportMenu(): void {

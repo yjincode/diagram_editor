@@ -14,16 +14,30 @@ import { exec, spawn, ChildProcess } from "child_process";
 import { platform } from "os";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { promises as fs } from "fs";
+import { promises as fs, readFileSync } from "fs";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
-import { config } from "./config.js";
 
 // Get the directory of this file
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const EDITOR_DIR = join(__dirname, "..", "..");  // diagram_editor directory
 const CACHE_DIR = join(EDITOR_DIR, "cache");  // Session cache directory
+
+// Load config from root config.json
+interface Config {
+  httpPort: number;
+  wsPort: number;
+  editorPort: number;
+}
+
+let config: Config;
+try {
+  const configPath = join(EDITOR_DIR, "config.json");
+  config = JSON.parse(readFileSync(configPath, "utf-8"));
+} catch {
+  config = { httpPort: 51001, wsPort: 51002, editorPort: 51173 };
+}
 
 // Session types
 interface SessionData {
@@ -71,13 +85,9 @@ function generateSessionId(): string {
   return `session_${Date.now().toString(36)}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
-// Port configuration (from config file)
-const EDITOR_PORT = config.editorPort;
-const HTTP_PORT = config.httpPort;
-const WS_PORT = config.wsPort;
-
 // Editor process management
 let editorProcess: ChildProcess | null = null;
+const EDITOR_PORT = config.editorPort;
 const EDITOR_URL = `http://localhost:${EDITOR_PORT}`;
 
 // Types
@@ -248,63 +258,50 @@ function calculateZoneSizeForComponents(
   };
 }
 
-// Calculate best anchors based on element positions - finds nearest face points
+// Calculate best anchors based on element positions
 function calculateBestAnchors(
   fromElement: Component | Zone | Note | Scenario,
   toElement: Component | Zone | Note | Scenario
 ): { fromAnchor: 'top' | 'bottom' | 'left' | 'right'; toAnchor: 'top' | 'bottom' | 'left' | 'right' } {
-  // Get element sizes
-  const fromWidth = (fromElement as any).width || 100;
-  const fromHeight = (fromElement as any).height || 80;
-  const toWidth = (toElement as any).width || 100;
-  const toHeight = (toElement as any).height || 80;
+  // Get element centers and sizes
+  const fromWidth = (fromElement as Zone).width || 100;
+  const fromHeight = (fromElement as Zone).height || 80;
+  const toWidth = (toElement as Zone).width || 100;
+  const toHeight = (toElement as Zone).height || 80;
 
-  // Calculate all anchor points for both elements
-  type AnchorType = 'top' | 'bottom' | 'left' | 'right';
-  const anchors: AnchorType[] = ['top', 'bottom', 'left', 'right'];
+  const fromCenterX = fromElement.x + fromWidth / 2;
+  const fromCenterY = fromElement.y + fromHeight / 2;
+  const toCenterX = toElement.x + toWidth / 2;
+  const toCenterY = toElement.y + toHeight / 2;
 
-  const getAnchorPointLocal = (el: any, w: number, h: number, anchor: AnchorType): Point => {
-    switch (anchor) {
-      case 'top': return { x: el.x + w / 2, y: el.y };
-      case 'bottom': return { x: el.x + w / 2, y: el.y + h };
-      case 'left': return { x: el.x, y: el.y + h / 2 };
-      case 'right': return { x: el.x + w, y: el.y + h / 2 };
+  const dx = toCenterX - fromCenterX;
+  const dy = toCenterY - fromCenterY;
+
+  let fromAnchor: 'top' | 'bottom' | 'left' | 'right';
+  let toAnchor: 'top' | 'bottom' | 'left' | 'right';
+
+  // Determine best anchors based on relative position
+  if (Math.abs(dx) > Math.abs(dy)) {
+    // Horizontal relationship
+    if (dx > 0) {
+      fromAnchor = 'right';
+      toAnchor = 'left';
+    } else {
+      fromAnchor = 'left';
+      toAnchor = 'right';
     }
-  };
-
-  // Find the pair of anchors with minimum distance
-  let minDistance = Infinity;
-  let bestFromAnchor: AnchorType = 'right';
-  let bestToAnchor: AnchorType = 'left';
-
-  for (const fromAnchor of anchors) {
-    const fromPoint = getAnchorPointLocal(fromElement, fromWidth, fromHeight, fromAnchor);
-
-    for (const toAnchor of anchors) {
-      const toPoint = getAnchorPointLocal(toElement, toWidth, toHeight, toAnchor);
-
-      // Calculate distance between anchor points
-      const distance = Math.hypot(toPoint.x - fromPoint.x, toPoint.y - fromPoint.y);
-
-      // Prefer opposite-facing anchors (right->left, bottom->top, etc.)
-      // Add small penalty for same-direction anchors to prefer clean connections
-      const isOpposite =
-        (fromAnchor === 'right' && toAnchor === 'left') ||
-        (fromAnchor === 'left' && toAnchor === 'right') ||
-        (fromAnchor === 'bottom' && toAnchor === 'top') ||
-        (fromAnchor === 'top' && toAnchor === 'bottom');
-
-      const adjustedDistance = isOpposite ? distance : distance * 1.2;
-
-      if (adjustedDistance < minDistance) {
-        minDistance = adjustedDistance;
-        bestFromAnchor = fromAnchor;
-        bestToAnchor = toAnchor;
-      }
+  } else {
+    // Vertical relationship
+    if (dy > 0) {
+      fromAnchor = 'bottom';
+      toAnchor = 'top';
+    } else {
+      fromAnchor = 'top';
+      toAnchor = 'bottom';
     }
   }
 
-  return { fromAnchor: bestFromAnchor, toAnchor: bestToAnchor };
+  return { fromAnchor, toAnchor };
 }
 
 // ========== Arrow Auto-Routing Algorithm ==========
@@ -427,7 +424,7 @@ function calculateAutoWaypoints(
 
   // Check if direct line intersects any obstacle
   const intersectingObstacles = obstacles.filter(obs =>
-    lineIntersectsRect(fromPoint, toPoint, obs, 30) // increased padding
+    lineIntersectsRect(fromPoint, toPoint, obs, 25)
   );
 
   if (intersectingObstacles.length === 0) {
@@ -436,19 +433,10 @@ function calculateAutoWaypoints(
   }
 
   // Calculate waypoints to avoid obstacles using orthogonal routing
-  const margin = 50; // Increased distance to route around obstacles
+  const waypoints: Point[] = [];
+  const margin = 40; // Distance to route around obstacles
 
-  // Find the combined bounding box of ALL obstacles (not just intersecting)
-  // This prevents routing through other obstacles
-  let allMinX = Infinity, allMinY = Infinity, allMaxX = -Infinity, allMaxY = -Infinity;
-  for (const obs of obstacles) {
-    allMinX = Math.min(allMinX, obs.x);
-    allMinY = Math.min(allMinY, obs.y);
-    allMaxX = Math.max(allMaxX, obs.x + obs.width);
-    allMaxY = Math.max(allMaxY, obs.y + obs.height);
-  }
-
-  // Find the bounding box of intersecting obstacles
+  // Find the combined bounding box of all intersecting obstacles
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const obs of intersectingObstacles) {
     minX = Math.min(minX, obs.x);
@@ -461,59 +449,41 @@ function calculateAutoWaypoints(
   const isHorizontalStart = fromAnchor === 'left' || fromAnchor === 'right';
   const isHorizontalEnd = toAnchor === 'left' || toAnchor === 'right';
 
-  // Helper: check if a path segment is clear
-  const isPathClear = (p1: Point, p2: Point): boolean => {
-    return !obstacles.some(obs => lineIntersectsRect(p1, p2, obs, 25));
-  };
-
   // Calculate the best route around obstacles
-  const waypoints: Point[] = [];
-
   if (isHorizontalStart && isHorizontalEnd) {
     // Both horizontal: route above or below
-    // Try both routes and pick the shorter clear one
-    const aboveY = Math.min(fromPoint.y, toPoint.y, minY - margin);
-    const belowY = Math.max(fromPoint.y, toPoint.y, maxY + margin);
+    const goAbove = fromPoint.y < (minY + maxY) / 2;
+    const routeY = goAbove ? minY - margin : maxY + margin;
 
-    // Calculate which route is shorter/clearer
-    const distAbove = Math.abs(fromPoint.y - aboveY) + Math.abs(toPoint.y - aboveY);
-    const distBelow = Math.abs(fromPoint.y - belowY) + Math.abs(toPoint.y - belowY);
+    // First move horizontally out from start, then vertical, then horizontal to end
+    const midX = (fromPoint.x + toPoint.x) / 2;
 
-    const routeY = distAbove <= distBelow ? aboveY : belowY;
-
-    const exitX = fromAnchor === 'right' ? Math.max(fromPoint.x, maxX) + margin : Math.min(fromPoint.x, minX) - margin;
-    const entryX = toAnchor === 'left' ? Math.min(toPoint.x, minX) - margin : Math.max(toPoint.x, maxX) + margin;
-
-    if (Math.abs(fromPoint.y - toPoint.y) > 50 || intersectingObstacles.length > 0) {
-      waypoints.push({ x: exitX, y: fromPoint.y });
-      waypoints.push({ x: exitX, y: routeY });
-      waypoints.push({ x: entryX, y: routeY });
-      waypoints.push({ x: entryX, y: toPoint.y });
+    if (Math.abs(fromPoint.y - toPoint.y) > 50) {
+      // Different Y levels: go around
+      waypoints.push({ x: fromPoint.x + (fromAnchor === 'right' ? margin : -margin), y: fromPoint.y });
+      waypoints.push({ x: fromPoint.x + (fromAnchor === 'right' ? margin : -margin), y: routeY });
+      waypoints.push({ x: toPoint.x + (toAnchor === 'left' ? -margin : margin), y: routeY });
+      waypoints.push({ x: toPoint.x + (toAnchor === 'left' ? -margin : margin), y: toPoint.y });
     } else {
-      const midX = (fromPoint.x + toPoint.x) / 2;
+      // Similar Y level: simple S-curve
       waypoints.push({ x: midX, y: fromPoint.y });
       waypoints.push({ x: midX, y: toPoint.y });
     }
   } else if (!isHorizontalStart && !isHorizontalEnd) {
     // Both vertical: route left or right
-    const leftX = Math.min(fromPoint.x, toPoint.x, minX - margin);
-    const rightX = Math.max(fromPoint.x, toPoint.x, maxX + margin);
+    const goLeft = fromPoint.x < (minX + maxX) / 2;
+    const routeX = goLeft ? minX - margin : maxX + margin;
 
-    const distLeft = Math.abs(fromPoint.x - leftX) + Math.abs(toPoint.x - leftX);
-    const distRight = Math.abs(fromPoint.x - rightX) + Math.abs(toPoint.x - rightX);
+    const midY = (fromPoint.y + toPoint.y) / 2;
 
-    const routeX = distLeft <= distRight ? leftX : rightX;
-
-    const exitY = fromAnchor === 'bottom' ? Math.max(fromPoint.y, maxY) + margin : Math.min(fromPoint.y, minY) - margin;
-    const entryY = toAnchor === 'top' ? Math.min(toPoint.y, minY) - margin : Math.max(toPoint.y, maxY) + margin;
-
-    if (Math.abs(fromPoint.x - toPoint.x) > 50 || intersectingObstacles.length > 0) {
-      waypoints.push({ x: fromPoint.x, y: exitY });
-      waypoints.push({ x: routeX, y: exitY });
-      waypoints.push({ x: routeX, y: entryY });
-      waypoints.push({ x: toPoint.x, y: entryY });
+    if (Math.abs(fromPoint.x - toPoint.x) > 50) {
+      // Different X levels: go around
+      waypoints.push({ x: fromPoint.x, y: fromPoint.y + (fromAnchor === 'bottom' ? margin : -margin) });
+      waypoints.push({ x: routeX, y: fromPoint.y + (fromAnchor === 'bottom' ? margin : -margin) });
+      waypoints.push({ x: routeX, y: toPoint.y + (toAnchor === 'top' ? -margin : margin) });
+      waypoints.push({ x: toPoint.x, y: toPoint.y + (toAnchor === 'top' ? -margin : margin) });
     } else {
-      const midY = (fromPoint.y + toPoint.y) / 2;
+      // Similar X level: simple S-curve
       waypoints.push({ x: fromPoint.x, y: midY });
       waypoints.push({ x: toPoint.x, y: midY });
     }
@@ -521,23 +491,22 @@ function calculateAutoWaypoints(
     // Mixed: one horizontal, one vertical - L-shaped or complex routing
     if (isHorizontalStart) {
       // Start horizontal, end vertical
+      // Check if we need to go around
       const intermediateX = toPoint.x;
       const intermediateY = fromPoint.y;
-      const intermediatePoint = { x: intermediateX, y: intermediateY };
 
       // Check if intermediate point is blocked
-      const intermediateBlocked = !isPathClear(fromPoint, intermediatePoint) ||
-        !isPathClear(intermediatePoint, toPoint);
+      const intermediateBlocked = obstacles.some(obs =>
+        intermediateX > obs.x - 20 && intermediateX < obs.x + obs.width + 20 &&
+        intermediateY > obs.y - 20 && intermediateY < obs.y + obs.height + 20
+      );
 
       if (intermediateBlocked) {
-        // Route around: calculate best detour
+        // Route around: extend further then turn
         const goUp = toPoint.y < fromPoint.y;
-        const routeY = goUp ? Math.min(minY, fromPoint.y, toPoint.y) - margin : Math.max(maxY, fromPoint.y, toPoint.y) + margin;
-
-        const extendX = fromAnchor === 'right' ? Math.max(fromPoint.x, maxX) + margin : Math.min(fromPoint.x, minX) - margin;
-
-        waypoints.push({ x: extendX, y: fromPoint.y });
-        waypoints.push({ x: extendX, y: routeY });
+        const routeY = goUp ? minY - margin : maxY + margin;
+        waypoints.push({ x: fromPoint.x + (fromAnchor === 'right' ? margin : -margin), y: fromPoint.y });
+        waypoints.push({ x: fromPoint.x + (fromAnchor === 'right' ? margin : -margin), y: routeY });
         waypoints.push({ x: toPoint.x, y: routeY });
       } else {
         // Simple L-shape
@@ -547,20 +516,18 @@ function calculateAutoWaypoints(
       // Start vertical, end horizontal
       const intermediateX = fromPoint.x;
       const intermediateY = toPoint.y;
-      const intermediatePoint = { x: intermediateX, y: intermediateY };
 
-      const intermediateBlocked = !isPathClear(fromPoint, intermediatePoint) ||
-        !isPathClear(intermediatePoint, toPoint);
+      const intermediateBlocked = obstacles.some(obs =>
+        intermediateX > obs.x - 20 && intermediateX < obs.x + obs.width + 20 &&
+        intermediateY > obs.y - 20 && intermediateY < obs.y + obs.height + 20
+      );
 
       if (intermediateBlocked) {
         // Route around
         const goLeft = toPoint.x < fromPoint.x;
-        const routeX = goLeft ? Math.min(minX, fromPoint.x, toPoint.x) - margin : Math.max(maxX, fromPoint.x, toPoint.x) + margin;
-
-        const extendY = fromAnchor === 'bottom' ? Math.max(fromPoint.y, maxY) + margin : Math.min(fromPoint.y, minY) - margin;
-
-        waypoints.push({ x: fromPoint.x, y: extendY });
-        waypoints.push({ x: routeX, y: extendY });
+        const routeX = goLeft ? minX - margin : maxX + margin;
+        waypoints.push({ x: fromPoint.x, y: fromPoint.y + (fromAnchor === 'bottom' ? margin : -margin) });
+        waypoints.push({ x: routeX, y: fromPoint.y + (fromAnchor === 'bottom' ? margin : -margin) });
         waypoints.push({ x: routeX, y: toPoint.y });
       } else {
         // Simple L-shape
@@ -569,48 +536,8 @@ function calculateAutoWaypoints(
     }
   }
 
-  // Final cleanup and validation
-  const cleanedWaypoints = cleanupWaypoints(waypoints, fromPoint, toPoint);
-
-  // Verify the path is actually clear, if not, try alternative
-  let allClear = true;
-  const allPathPoints = [fromPoint, ...cleanedWaypoints, toPoint];
-  for (let i = 0; i < allPathPoints.length - 1; i++) {
-    if (!isPathClear(allPathPoints[i], allPathPoints[i + 1])) {
-      allClear = false;
-      break;
-    }
-  }
-
-  if (!allClear) {
-    // Fallback: simple wide detour around all obstacles
-    const safeMargin = 60;
-    const goAbove = fromPoint.y <= (allMinY + allMaxY) / 2;
-    const goLeft = fromPoint.x <= (allMinX + allMaxX) / 2;
-
-    const safeY = goAbove ? allMinY - safeMargin : allMaxY + safeMargin;
-    const safeX = goLeft ? allMinX - safeMargin : allMaxX + safeMargin;
-
-    if (isHorizontalStart && isHorizontalEnd) {
-      return [
-        { x: fromPoint.x, y: safeY },
-        { x: toPoint.x, y: safeY }
-      ];
-    } else if (!isHorizontalStart && !isHorizontalEnd) {
-      return [
-        { x: safeX, y: fromPoint.y },
-        { x: safeX, y: toPoint.y }
-      ];
-    } else {
-      return [
-        { x: fromPoint.x + (isHorizontalStart ? (fromAnchor === 'right' ? safeMargin : -safeMargin) : 0), y: fromPoint.y + (!isHorizontalStart ? (fromAnchor === 'bottom' ? safeMargin : -safeMargin) : 0) },
-        { x: safeX, y: safeY },
-        { x: toPoint.x + (isHorizontalEnd ? (toAnchor === 'right' ? safeMargin : -safeMargin) : 0), y: toPoint.y + (!isHorizontalEnd ? (toAnchor === 'bottom' ? safeMargin : -safeMargin) : 0) }
-      ];
-    }
-  }
-
-  return cleanedWaypoints;
+  // Clean up waypoints: remove redundant points (collinear or too close)
+  return cleanupWaypoints(waypoints, fromPoint, toPoint);
 }
 
 // Remove redundant waypoints
@@ -665,7 +592,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         description: `웹 에디터를 브라우저에서 엽니다. 에디터가 실행 중이 아니면 자동으로 시작합니다.
 
 【자동 시작 기능】
-- 웹 에디터(localhost:5173)가 실행 중인지 자동 확인
+- 웹 에디터(localhost:${config.editorPort})가 실행 중인지 자동 확인
 - 실행 중이 아니면 자동으로 Vite 개발 서버 시작
 - 서버가 준비되면 브라우저를 자동으로 엽니다
 
@@ -689,13 +616,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 
 【시스템 구조】
 - MCP 서버: 다이어그램 데이터를 관리하고 도구를 제공
-- HTTP API (localhost:3001): 브라우저와 실시간 동기화
+- HTTP API (localhost:${config.httpPort}): 브라우저와 실시간 동기화
 - 웹 에디터: HTML 기반 다이어그램 편집기
 
 【실행 방법】
 1. MCP 서버 실행: cd mcp-server && npm start
 2. 웹 에디터 실행: cd diagram_editor && npm run dev
-3. 브라우저에서 http://localhost:5173 접속
+3. 브라우저에서 http://localhost:${config.editorPort} 접속
 4. 또는 open_editor 도구로 자동 열기
 
 【레이아웃 가이드】
@@ -728,7 +655,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 create_diagram({ width: 1600, height: 1000 })
 
 【웹 에디터 연동】
-생성 후 웹 에디터(localhost:5173)에서 실시간으로 확인 가능합니다.
+생성 후 웹 에디터(localhost:${config.editorPort})에서 실시간으로 확인 가능합니다.
 JSON 버튼 → 가져오기로 get_diagram 결과를 붙여넣어도 됩니다.`,
         inputSchema: {
           type: "object",
@@ -836,45 +763,49 @@ add_zone({ label: "백엔드", x: 400, y: 50, width: 450, height: 350, color: "#
 
 【자동 앵커 선택】
 - fromAnchor/toAnchor를 생략하면 두 요소의 위치에 따라 자동으로 최적의 방향이 선택됩니다.
-- 컴포넌트 사이의 가장 가까운 면을 자동으로 선택
-- 다른 컴포넌트를 피해 자동으로 경로 계산
+- 가로로 배치된 경우: right → left
+- 세로로 배치된 경우: bottom → top
+- 필요시 수동 지정도 가능
 
-【화살표 마커 스타일】
-- startMarker: 시작점 모양 (none: ─, arrow: ◀─, circle: ●─)
-- endMarker: 끝점 모양 (none: ─, arrow: ─▶, circle: ─●)
+【waypoints (꺾는점) - 선 정리의 핵심!】
+화살표가 겹치거나 다른 요소를 통과할 때 waypoints로 깔끔하게 정리하세요.
 
-★ 상황별 추천 스타일:
-- 일반 데이터 흐름: startMarker: "none", endMarker: "arrow" (기본값)
-- 양방향 통신: startMarker: "arrow", endMarker: "arrow"
-- 연관 관계: startMarker: "circle", endMarker: "circle"
-- 의존성: startMarker: "none", endMarker: "arrow", style: "dashed"
-- 이벤트/신호: startMarker: "circle", endMarker: "arrow"
+★ 패턴 1: 수직 우회 (가로로 긴 경로)
+  waypoints: [{x: 중간X, y: 시작Y}, {x: 중간X, y: 끝Y}]
+  예: [{x: 300, y: 100}, {x: 300, y: 300}]
 
-【선 스타일】
-- solid: 실선 (일반 연결, 데이터 흐름)
-- dashed: 점선 (옵션, 비동기, 의존성)
+★ 패턴 2: 수평 우회 (세로로 긴 경로)
+  waypoints: [{x: 시작X, y: 중간Y}, {x: 끝X, y: 중간Y}]
+  예: [{x: 100, y: 200}, {x: 400, y: 200}]
+
+★ 패턴 3: ㄱ자 꺾기 (컴포넌트 우회)
+  waypoints: [{x: 우회X, y: 우회Y}]
+  예: [{x: 500, y: 150}]
+
+★ 패턴 4: 여러 화살표 분리 (같은 방향 화살표들)
+  각 화살표에 다른 Y좌표 waypoint 설정
+  화살표1: [{x: 300, y: 90}]
+  화살표2: [{x: 300, y: 110}]
+  화살표3: [{x: 300, y: 130}]
 
 【사용 예시】
 add_arrow({ from: "comp_1", to: "comp_2", label: "API 호출" })
-add_arrow({ from: "comp_1", to: "comp_2", label: "양방향", startMarker: "arrow", endMarker: "arrow" })
-add_arrow({ from: "comp_1", to: "comp_2", label: "의존성", style: "dashed" })
-add_arrow({ from: "comp_1", to: "comp_2", label: "이벤트", startMarker: "circle", endMarker: "arrow" })`,
+add_arrow({ from: "comp_1", to: "comp_3", waypoints: [{x: 200, y: 300}], style: "dashed" })
+add_arrow({ from: "comp_1", to: "comp_4", waypoints: [{x: 150, y: 200}, {x: 150, y: 400}] })`,
         inputSchema: {
           type: "object",
           properties: {
             from: { type: "string", description: "시작 컴포넌트 ID" },
-            fromAnchor: { type: "string", enum: ["top", "bottom", "left", "right"], description: "시작점 위치 (생략 시 자동)" },
+            fromAnchor: { type: "string", enum: ["top", "bottom", "left", "right"], description: "시작점 위치" },
             to: { type: "string", description: "끝 컴포넌트 ID" },
-            toAnchor: { type: "string", enum: ["top", "bottom", "left", "right"], description: "끝점 위치 (생략 시 자동)" },
+            toAnchor: { type: "string", enum: ["top", "bottom", "left", "right"], description: "끝점 위치" },
             label: { type: "string", description: "화살표 위에 표시할 텍스트" },
             color: { type: "string", description: "화살표 색상 (hex)" },
-            style: { type: "string", enum: ["solid", "dashed"], description: "solid: 실선, dashed: 점선 (기본: solid)" },
-            startMarker: { type: "string", enum: ["none", "arrow", "circle"], description: "시작점 모양 (기본: none)" },
-            endMarker: { type: "string", enum: ["none", "arrow", "circle"], description: "끝점 모양 (기본: arrow)" },
+            style: { type: "string", enum: ["solid", "dashed"], description: "solid: 실선, dashed: 점선" },
             waypoints: {
               type: "array",
               items: { type: "object", properties: { x: { type: "number" }, y: { type: "number" } } },
-              description: "꺾는점 좌표 배열 (자동 계산됨, 수동 지정 시 우선)"
+              description: "꺾는점 좌표 배열 (선택)"
             }
           },
           required: ["from", "to"]
@@ -975,7 +906,7 @@ resize_element({ id: "zone_1", width: 400, height: 300 })`,
 
 【웹 에디터 연동】
 이 JSON을 웹 에디터의 "가져오기" 버튼으로 붙여넣으면 다이어그램을 볼 수 있습니다.
-웹 에디터 주소: http://localhost:5173`,
+웹 에디터 주소: http://localhost:${config.editorPort}`,
         inputSchema: {
           type: "object",
           properties: {}
@@ -2067,7 +1998,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// HTTP_PORT and WS_PORT are defined at the top of the file
+const HTTP_PORT = config.httpPort;
+const WS_PORT = config.wsPort;
 
 // WebSocket server and clients
 let wss: WebSocketServer | null = null;
@@ -2075,7 +2007,7 @@ const wsClients: Set<WebSocket> = new Set();
 
 // Auto-shutdown timer (1 minute after last activity)
 let autoShutdownTimer: ReturnType<typeof setTimeout> | null = null;
-const AUTO_SHUTDOWN_MS = config.autoShutdownMs;
+const AUTO_SHUTDOWN_MS = 60000; // 1분
 
 // Reset auto-shutdown timer
 function resetAutoShutdownTimer() {

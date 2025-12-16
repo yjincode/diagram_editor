@@ -1,6 +1,9 @@
 import { defineConfig, Plugin } from 'vite'
-import { promises as fs } from 'fs'
+import { promises as fs, readFileSync } from 'fs'
 import { join } from 'path'
+
+// Load config from root config.json
+const config = JSON.parse(readFileSync(join(__dirname, 'config.json'), 'utf-8'))
 
 // Cache folder API plugin - allows frontend to read sessions without MCP server
 function cacheApiPlugin(): Plugin {
@@ -131,9 +134,6 @@ function cacheApiPlugin(): Plugin {
   }
 }
 
-// Port configuration (same as mcp-server/src/config.ts)
-const EDITOR_PORT = 41173
-
 export default defineConfig({
   root: '.',
   build: {
@@ -141,7 +141,6 @@ export default defineConfig({
   },
   plugins: [cacheApiPlugin()],
   server: {
-    port: EDITOR_PORT,
-    host: '0.0.0.0' // Allow access from Docker
+    port: config.editorPort
   }
 })
