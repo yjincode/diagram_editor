@@ -1,6 +1,6 @@
 import { SessionManager } from '../core/SessionManager';
 import { SessionListItem } from '../types';
-import { t } from '../i18n';
+import { t, i18n } from '../i18n';
 
 export class SessionSidebar {
   private sessionManager: SessionManager;
@@ -43,6 +43,12 @@ export class SessionSidebar {
     // Update button text based on language
     this.updateButtonText();
 
+    // 언어 변경 시 버튼 텍스트 및 리스트 업데이트
+    i18n.onChange(() => {
+      this.updateButtonText();
+      this.render();
+    });
+
     // Session manager events
     this.sessionManager.on('sessionChange', () => {
       this.loadSessions();
@@ -52,7 +58,15 @@ export class SessionSidebar {
       this.loadSessions();
     });
 
-    this.sessionManager.on('sessionTitleChange', () => {
+    this.sessionManager.on('sessionTitleChange', (newTitle: string) => {
+      // 현재 세션의 제목이 변경된 경우 로컬 배열도 업데이트
+      const currentId = this.sessionManager.currentSessionId;
+      if (currentId) {
+        const idx = this.sessions.findIndex(s => s.id === currentId);
+        if (idx >= 0) {
+          this.sessions[idx].title = newTitle;
+        }
+      }
       this.render();
     });
   }
@@ -97,7 +111,15 @@ export class SessionSidebar {
         <div class="session-item ${isActive ? 'active' : ''}" data-id="${session.id}">
           <div class="session-item-header">
             <div class="session-title" data-id="${session.id}">${this.escapeHtml(session.title)}</div>
-            <button class="session-delete-btn" data-id="${session.id}" title="${t('deleteSession')}">×</button>
+            <div class="session-actions">
+              <button class="session-edit-btn" data-id="${session.id}" title="${t('editTitle')}">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                </svg>
+              </button>
+              <button class="session-delete-btn" data-id="${session.id}" title="${t('deleteSession')}">×</button>
+            </div>
           </div>
           <div class="session-date">${formattedDate}</div>
         </div>
@@ -112,9 +134,12 @@ export class SessionSidebar {
     this.listContainer.querySelectorAll('.session-item').forEach(item => {
       item.addEventListener('click', (e) => {
         const target = e.target as HTMLElement;
-        // Don't trigger if clicking delete button or input
+        // Don't trigger if clicking buttons or input
         if (target.classList.contains('session-delete-btn') ||
-            target.classList.contains('session-title-input')) {
+            target.classList.contains('session-edit-btn') ||
+            target.classList.contains('session-title-input') ||
+            target.closest('.session-edit-btn') ||
+            target.closest('.session-actions')) {
           return;
         }
         const id = item.getAttribute('data-id');
@@ -126,6 +151,16 @@ export class SessionSidebar {
     this.listContainer.querySelectorAll('.session-title').forEach(title => {
       title.addEventListener('dblclick', (e) => {
         const id = (e.target as HTMLElement).getAttribute('data-id');
+        if (id) this.startEditingTitle(id);
+      });
+    });
+
+    // Edit button
+    this.listContainer.querySelectorAll('.session-edit-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const target = e.currentTarget as HTMLElement;
+        const id = target.getAttribute('data-id');
         if (id) this.startEditingTitle(id);
       });
     });
@@ -215,12 +250,17 @@ export class SessionSidebar {
     const id = input.getAttribute('data-id');
     const newTitle = input.value.trim();
 
-    if (id && newTitle && id === this.sessionManager.currentSessionId) {
-      await this.sessionManager.setTitle(newTitle);
+    if (id && newTitle) {
+      await this.sessionManager.setTitle(id, newTitle);
+      // 로컬 sessions 배열도 직접 업데이트 (서버 동기화 지연 문제 방지)
+      const sessionIdx = this.sessions.findIndex(s => s.id === id);
+      if (sessionIdx >= 0) {
+        this.sessions[sessionIdx].title = newTitle;
+      }
     }
 
     this.editingSessionId = null;
-    this.loadSessions();
+    this.render();  // loadSessions 대신 render만 호출 (캐시 이미 업데이트됨)
   }
 
   private async handleDeleteSession(id: string): Promise<void> {

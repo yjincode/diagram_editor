@@ -69,15 +69,9 @@ async function ensureCacheDir(): Promise<void> {
   }
 }
 
-// Generate default session title (date + time)
+// Generate default session title
 function getDefaultSessionTitle(): string {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  const hours = String(now.getHours()).padStart(2, '0');
-  const minutes = String(now.getMinutes()).padStart(2, '0');
-  return `${year}-${month}-${day} ${hours}:${minutes}`;
+  return '새로운 다이어그램';
 }
 
 // Generate session ID
@@ -116,6 +110,7 @@ interface Zone {
   y: number;
   width: number;
   height: number;
+  lockElements?: boolean;  // 내부 요소 고정 (함께 이동)
 }
 
 interface Arrow {
@@ -127,8 +122,11 @@ interface Arrow {
   toAnchor: 'top' | 'bottom' | 'left' | 'right';
   waypoints: Point[];
   label: string;
+  labels?: string[];  // 추가 라벨들 (양방향 화살표 등에 사용)
   color: string;
   style: 'solid' | 'dashed';
+  startMarker?: 'none' | 'arrow' | 'circle';  // 시작점 형태 (기본: none)
+  endMarker?: 'none' | 'arrow' | 'circle';    // 끝점 형태 (기본: arrow)
 }
 
 interface Note {
@@ -165,6 +163,7 @@ let diagram: DiagramData = {
 };
 
 let idCounter = 0;
+let isAILoading = false;  // AI가 다이어그램 생성 중인지 추적
 
 function generateId(prefix: string): string {
   return `${prefix}_${++idCounter}_${Date.now().toString(36)}`;
@@ -229,14 +228,35 @@ function calculateScenarioSize(title: string, subtitle: string, desc: string, fo
   };
 }
 
+// 요소 개수에 따른 동적 간격 계산
+function calculateDynamicSpacing(elementCount: number, baseSpacing: number): {
+  componentSpacing: number;  // 컴포넌트 간 간격
+  zoneSpacing: number;       // zone 간 간격
+  zonePadding: number;       // zone 내부 패딩
+} {
+  // 요소가 많을수록 간격 증가 (화살표 겹침 방지)
+  const scaleFactor = Math.min(1.5, 1 + (elementCount - 3) * 0.1);
+
+  return {
+    componentSpacing: Math.round(baseSpacing * scaleFactor),
+    zoneSpacing: Math.round(80 * scaleFactor),  // zone 간 기본 80px
+    zonePadding: Math.round(40 + Math.min(20, (elementCount - 2) * 5))  // 기본 40, 최대 60
+  };
+}
+
 // Calculate zone size based on components inside
+// 요소 수에 따라 패딩과 간격을 동적으로 조절
 function calculateZoneSizeForComponents(
   components: Array<{ x: number; y: number; width?: number; height?: number }>,
-  padding = 40
+  basePadding = 40
 ): { x: number; y: number; width: number; height: number } {
   if (components.length === 0) {
     return { x: 50, y: 50, width: 300, height: 200 };
   }
+
+  // 요소 수에 따라 패딩 동적 증가 (많을수록 여유 공간 확보)
+  // 1-2개: basePadding, 3-4개: +10, 5개 이상: +20
+  const dynamicPadding = basePadding + Math.min(20, Math.floor((components.length - 1) / 2) * 10);
 
   let minX = Infinity, minY = Infinity;
   let maxX = -Infinity, maxY = -Infinity;
@@ -251,10 +271,10 @@ function calculateZoneSizeForComponents(
   });
 
   return {
-    x: minX - padding,
-    y: minY - padding - 20, // 라벨 공간 추가
-    width: Math.ceil((maxX - minX + padding * 2) / 20) * 20,
-    height: Math.ceil((maxY - minY + padding * 2 + 20) / 20) * 20
+    x: minX - dynamicPadding,
+    y: minY - dynamicPadding - 20, // 라벨 공간 추가
+    width: Math.ceil((maxX - minX + dynamicPadding * 2) / 20) * 20,
+    height: Math.ceil((maxY - minY + dynamicPadding * 2 + 20) / 20) * 20
   };
 }
 
@@ -408,7 +428,8 @@ function calculateAutoWaypoints(
   toElement: { x: number; y: number; width?: number; height?: number; id?: string },
   fromAnchor: 'top' | 'bottom' | 'left' | 'right',
   toAnchor: 'top' | 'bottom' | 'left' | 'right',
-  existingWaypoints?: Point[]
+  existingWaypoints?: Point[],
+  arrowCount?: number  // 총 화살표 수 (동적 간격용)
 ): Point[] {
   // If waypoints already provided, use them
   if (existingWaypoints && existingWaypoints.length > 0) {
@@ -422,9 +443,9 @@ function calculateAutoWaypoints(
   const excludeIds = [fromElement.id, toElement.id].filter(Boolean) as string[];
   const obstacles = getObstacleBounds(excludeIds);
 
-  // Check if direct line intersects any obstacle
+  // 더 넓은 패딩으로 충돌 감지 (40px로 증가)
   const intersectingObstacles = obstacles.filter(obs =>
-    lineIntersectsRect(fromPoint, toPoint, obs, 25)
+    lineIntersectsRect(fromPoint, toPoint, obs, 40)
   );
 
   if (intersectingObstacles.length === 0) {
@@ -434,7 +455,10 @@ function calculateAutoWaypoints(
 
   // Calculate waypoints to avoid obstacles using orthogonal routing
   const waypoints: Point[] = [];
-  const margin = 40; // Distance to route around obstacles
+  // 화살표 수에 따라 우회 거리 동적 조절 (많을수록 더 넓게)
+  const baseMargin = 60;
+  const arrowMultiplier = arrowCount ? Math.min(1.5, 1 + (arrowCount - 5) * 0.05) : 1;
+  const margin = Math.round(baseMargin * arrowMultiplier);
 
   // Find the combined bounding box of all intersecting obstacles
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -449,44 +473,27 @@ function calculateAutoWaypoints(
   const isHorizontalStart = fromAnchor === 'left' || fromAnchor === 'right';
   const isHorizontalEnd = toAnchor === 'left' || toAnchor === 'right';
 
-  // Calculate the best route around obstacles
+  // Calculate the best route around obstacles - 더 적극적으로 우회
   if (isHorizontalStart && isHorizontalEnd) {
     // Both horizontal: route above or below
     const goAbove = fromPoint.y < (minY + maxY) / 2;
     const routeY = goAbove ? minY - margin : maxY + margin;
 
-    // First move horizontally out from start, then vertical, then horizontal to end
-    const midX = (fromPoint.x + toPoint.x) / 2;
-
-    if (Math.abs(fromPoint.y - toPoint.y) > 50) {
-      // Different Y levels: go around
-      waypoints.push({ x: fromPoint.x + (fromAnchor === 'right' ? margin : -margin), y: fromPoint.y });
-      waypoints.push({ x: fromPoint.x + (fromAnchor === 'right' ? margin : -margin), y: routeY });
-      waypoints.push({ x: toPoint.x + (toAnchor === 'left' ? -margin : margin), y: routeY });
-      waypoints.push({ x: toPoint.x + (toAnchor === 'left' ? -margin : margin), y: toPoint.y });
-    } else {
-      // Similar Y level: simple S-curve
-      waypoints.push({ x: midX, y: fromPoint.y });
-      waypoints.push({ x: midX, y: toPoint.y });
-    }
+    // 항상 우회 경로 사용 (장애물이 감지됐으므로)
+    waypoints.push({ x: fromPoint.x + (fromAnchor === 'right' ? margin : -margin), y: fromPoint.y });
+    waypoints.push({ x: fromPoint.x + (fromAnchor === 'right' ? margin : -margin), y: routeY });
+    waypoints.push({ x: toPoint.x + (toAnchor === 'left' ? -margin : margin), y: routeY });
+    waypoints.push({ x: toPoint.x + (toAnchor === 'left' ? -margin : margin), y: toPoint.y });
   } else if (!isHorizontalStart && !isHorizontalEnd) {
     // Both vertical: route left or right
     const goLeft = fromPoint.x < (minX + maxX) / 2;
     const routeX = goLeft ? minX - margin : maxX + margin;
 
-    const midY = (fromPoint.y + toPoint.y) / 2;
-
-    if (Math.abs(fromPoint.x - toPoint.x) > 50) {
-      // Different X levels: go around
-      waypoints.push({ x: fromPoint.x, y: fromPoint.y + (fromAnchor === 'bottom' ? margin : -margin) });
-      waypoints.push({ x: routeX, y: fromPoint.y + (fromAnchor === 'bottom' ? margin : -margin) });
-      waypoints.push({ x: routeX, y: toPoint.y + (toAnchor === 'top' ? -margin : margin) });
-      waypoints.push({ x: toPoint.x, y: toPoint.y + (toAnchor === 'top' ? -margin : margin) });
-    } else {
-      // Similar X level: simple S-curve
-      waypoints.push({ x: fromPoint.x, y: midY });
-      waypoints.push({ x: toPoint.x, y: midY });
-    }
+    // 항상 우회 경로 사용 (장애물이 감지됐으므로)
+    waypoints.push({ x: fromPoint.x, y: fromPoint.y + (fromAnchor === 'bottom' ? margin : -margin) });
+    waypoints.push({ x: routeX, y: fromPoint.y + (fromAnchor === 'bottom' ? margin : -margin) });
+    waypoints.push({ x: routeX, y: toPoint.y + (toAnchor === 'top' ? -margin : margin) });
+    waypoints.push({ x: toPoint.x, y: toPoint.y + (toAnchor === 'top' ? -margin : margin) });
   } else {
     // Mixed: one horizontal, one vertical - L-shaped or complex routing
     if (isHorizontalStart) {
@@ -614,34 +621,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         name: "get_usage_guide",
         description: `다이어그램 에디터 사용 가이드를 반환합니다.
 
+【⚠️⚠️⚠️ 필수 순서 - 반드시 지켜야 합니다! ⚠️⚠️⚠️】
+1. open_editor - 에디터 열기
+2. show_loading - 로딩 화면 표시 (필수!)
+3. build_diagram - 다이어그램 생성
+
 【시스템 구조】
 - MCP 서버: 다이어그램 데이터를 관리하고 도구를 제공
 - HTTP API (localhost:${config.httpPort}): 브라우저와 실시간 동기화
 - 웹 에디터: HTML 기반 다이어그램 편집기
 
-【실행 방법】
-1. MCP 서버 실행: cd mcp-server && npm start
-2. 웹 에디터 실행: cd diagram_editor && npm run dev
-3. 브라우저에서 http://localhost:${config.editorPort} 접속
-4. 또는 open_editor 도구로 자동 열기
-
 【레이아웃 가이드】
 - 영역(Zone) 간격: 요소가 많을 때는 Zone 사이에 최소 100px 이상 여백 확보
 - 컴포넌트 간격: 가로 180~220px, 세로 120~160px 권장
-- 화살표 정리: waypoints를 활용해 겹치는 화살표 분리
-  예: {x: 250, y: 150}로 중간점을 추가해 우회 경로 생성
-- 컴포넌트 크기: 텍스트 길이에 따라 자동 조절됨
-
-【waypoints 활용 팁】
-1. 가로로 긴 경로: waypoints를 수직으로 꺾어 정리
-2. 여러 화살표가 겹칠 때: 각 화살표에 다른 y좌표 waypoint 설정
-3. 컴포넌트 우회: 중간에 waypoint를 추가해 다른 요소를 피해가기
-예시: waypoints: [{x: 200, y: 100}, {x: 200, y: 300}] // 수직으로 꺾기
-
-【파일 구조】
-- mcp-server/: MCP 서버 코드
-- src/: 웹 에디터 프론트엔드 코드
-- JSON 버튼으로 다이어그램 내보내기/가져오기 가능`,
+- 화살표 정리: waypoints를 활용해 겹치는 화살표 분리`,
         inputSchema: {
           type: "object",
           properties: {}
@@ -674,10 +667,10 @@ JSON 버튼 → 가져오기로 get_diagram 결과를 붙여넣어도 됩니다.
 - 이름이 20자를 초과하면 2줄로 표시되고 컴포넌트 높이가 자동 증가합니다.
 - width/height를 직접 지정하면 자동 계산을 무시합니다.
 
-【좌표 가이드 - 화살표 공간 확보 필수!】
+【좌표 가이드 - 넉넉하게! (머메이드 스타일)】
 - 좌측 상단이 (0, 0)
-- ⚠️ 최소 간격: 가로 250px, 세로 180px (화살표 라벨 공간)
-- 권장 간격: 가로 300px, 세로 200px
+- 가로 간격: 350~400px (같은 행)
+- 세로 간격: 250~300px (다른 행)
 - 컴포넌트 너비: 약 120~180px, 높이: 약 80~100px
 
 【색상 가이드 - 비슷한 요소끼리 통일!】
@@ -767,6 +760,24 @@ add_zone({ label: "백엔드", x: 400, y: 50, width: 450, height: 350, color: "#
 - 세로로 배치된 경우: bottom → top
 - 필요시 수동 지정도 가능
 
+【양방향 화살표 (효율적인 방법!)】
+두 컴포넌트 간 양방향 통신을 표현할 때 화살표 2개 대신 1개로 깔끔하게!
+
+★ 양방향 화살표 만들기:
+  - startMarker: "arrow" (시작점에 화살표)
+  - endMarker: "arrow" (끝점에 화살표)
+  - labels: ["요청", "응답"] (여러 라벨 표시)
+
+예시:
+add_arrow({
+  from: "client", to: "server",
+  label: "HTTP 요청",
+  labels: ["응답"],
+  startMarker: "arrow", endMarker: "arrow"
+})
+
+※ 마커 종류: "none" (없음), "arrow" (화살표), "circle" (원형)
+
 【waypoints (꺾는점) - 선 정리의 핵심!】
 화살표가 겹치거나 다른 요소를 통과할 때 waypoints로 깔끔하게 정리하세요.
 
@@ -791,7 +802,7 @@ add_zone({ label: "백엔드", x: 400, y: 50, width: 450, height: 350, color: "#
 【사용 예시】
 add_arrow({ from: "comp_1", to: "comp_2", label: "API 호출" })
 add_arrow({ from: "comp_1", to: "comp_3", waypoints: [{x: 200, y: 300}], style: "dashed" })
-add_arrow({ from: "comp_1", to: "comp_4", waypoints: [{x: 150, y: 200}, {x: 150, y: 400}] })`,
+add_arrow({ from: "client", to: "server", label: "요청", labels: ["응답"], startMarker: "arrow", endMarker: "arrow" })`,
         inputSchema: {
           type: "object",
           properties: {
@@ -799,9 +810,12 @@ add_arrow({ from: "comp_1", to: "comp_4", waypoints: [{x: 150, y: 200}, {x: 150,
             fromAnchor: { type: "string", enum: ["top", "bottom", "left", "right"], description: "시작점 위치" },
             to: { type: "string", description: "끝 컴포넌트 ID" },
             toAnchor: { type: "string", enum: ["top", "bottom", "left", "right"], description: "끝점 위치" },
-            label: { type: "string", description: "화살표 위에 표시할 텍스트" },
+            label: { type: "string", description: "메인 라벨 (화살표 위에 표시)" },
+            labels: { type: "array", items: { type: "string" }, description: "추가 라벨들 (양방향 화살표 등에 사용)" },
             color: { type: "string", description: "화살표 색상 (hex)" },
             style: { type: "string", enum: ["solid", "dashed"], description: "solid: 실선, dashed: 점선" },
+            startMarker: { type: "string", enum: ["none", "arrow", "circle"], description: "시작점 형태 (기본: none)" },
+            endMarker: { type: "string", enum: ["none", "arrow", "circle"], description: "끝점 형태 (기본: arrow)" },
             waypoints: {
               type: "array",
               items: { type: "object", properties: { x: { type: "number" }, y: { type: "number" } } },
@@ -990,6 +1004,16 @@ set_session_title({ title: "E-commerce 시스템 아키텍처" })`,
         name: "build_diagram",
         description: `한 번의 호출로 전체 다이어그램을 구축합니다. 가장 효율적인 방법!
 
+⚠️⚠️⚠️ 필수: 이 도구 호출 전에 반드시 show_loading 도구를 먼저 호출하세요! ⚠️⚠️⚠️
+순서: open_editor → show_loading → build_diagram (이 순서를 반드시 지켜야 합니다!)
+
+【⚠️ 컴포넌트 간격 - 넉넉하게! (머메이드 스타일)】
+- 가로 간격: 350~400px (같은 행의 컴포넌트 사이)
+- 세로 간격: 250~300px (다른 행의 컴포넌트 사이)
+- Zone 간 간격: 최소 150px
+- 예: x좌표 100 → 500 → 900 (400px 간격)
+- 예: y좌표 100 → 400 → 700 (300px 간격)
+
 【색상 가이드 - 비슷한 요소끼리 통일!】
 - 프론트엔드/클라이언트: #2196f3 (파랑)
 - 백엔드/API 서버: #4caf50 (초록)
@@ -1009,23 +1033,41 @@ zones: [
 【사용 예시】
 build_diagram({
   zones: [
-    { label: "Frontend", containsIndices: [0], color: "#2196f3" },  // 자동 크기
-    { label: "Backend", x: 400, y: 50, width: 400, height: 350, color: "#4caf50" }  // 수동 크기
+    { label: "Frontend", containsIndices: [0], color: "#2196f3" },
+    { label: "Backend", containsIndices: [1, 2], color: "#4caf50" }
   ],
   components: [
-    { name: "React App", x: 100, y: 100, color: "#2196f3" },
-    { name: "API Server", x: 450, y: 100, color: "#4caf50" },
-    { name: "PostgreSQL", x: 450, y: 280, color: "#9c27b0" }
+    { name: "React App", x: 100, y: 150, color: "#2196f3" },
+    { name: "API Server", x: 500, y: 150, color: "#4caf50" },  // 가로 400px 간격
+    { name: "PostgreSQL", x: 500, y: 450, color: "#9c27b0" }   // 세로 300px 간격
   ],
   arrows: [
-    { from: 0, to: 1, label: "REST" },
-    { from: 1, to: 2, label: "Query" }
+    { from: 0, to: 1, label: "REST API" },
+    { from: 1, to: 2, label: "SQL Query" }
   ]
 })
 
 【arrows 연결 방식】
 - from/to에 컴포넌트 인덱스 사용 (0부터 시작)
 - 자동으로 최적 앵커 선택
+
+【🔥 중요: 양방향 통신은 화살표 1개로!】
+⚠️ 양방향 화살표 2개 사용 금지! 반드시 1개 화살표에 양쪽 마커를 사용하세요:
+
+arrows: [
+  {
+    from: 0, to: 1,
+    label: "요청",           // 첫 번째 라벨
+    labels: ["응답"],        // 추가 라벨들
+    startMarker: "arrow",    // 시작점 화살표
+    endMarker: "arrow"       // 끝점 화살표
+  }
+]
+
+예시 - 클라이언트↔서버 통신:
+{ from: 0, to: 1, label: "HTTP Request", labels: ["Response"], startMarker: "arrow", endMarker: "arrow" }
+
+마커 종류: "none" (없음), "arrow" (화살표), "circle" (원형)
 
 【⚠️ 필수: waypoints로 선 정리!】
 화살표가 3개 이상이면 반드시 waypoints로 정리하세요:
@@ -1086,9 +1128,12 @@ arrows: [
                 properties: {
                   from: { type: "number", description: "시작 컴포넌트 인덱스" },
                   to: { type: "number", description: "끝 컴포넌트 인덱스" },
-                  label: { type: "string" },
+                  label: { type: "string", description: "메인 라벨" },
+                  labels: { type: "array", items: { type: "string" }, description: "추가 라벨들 (양방향 화살표에 필수!)" },
                   color: { type: "string" },
                   style: { type: "string", enum: ["solid", "dashed"] },
+                  startMarker: { type: "string", enum: ["none", "arrow", "circle"], description: "시작점 형태 (양방향: arrow)" },
+                  endMarker: { type: "string", enum: ["none", "arrow", "circle"], description: "끝점 형태 (기본: arrow)" },
                   waypoints: {
                     type: "array",
                     items: { type: "object", properties: { x: { type: "number" }, y: { type: "number" } } },
@@ -1112,6 +1157,41 @@ arrows: [
               }
             }
           }
+        }
+      },
+      {
+        name: "show_loading",
+        description: `⚠️ build_diagram 호출 전 필수! 웹 에디터에 로딩 화면을 표시합니다.
+
+【⚠️⚠️⚠️ 중요: build_diagram 전에 반드시 이 도구를 먼저 호출하세요! ⚠️⚠️⚠️】
+
+【필수 순서】
+1. open_editor 호출 (에디터 열기)
+2. show_loading 호출 ← 지금 이 단계! (로딩 화면 표시)
+3. build_diagram 호출 (다이어그램 생성)
+
+【주의】
+- open_editor 없이 호출하면 효과 없음
+- build_diagram은 자동으로 로딩을 종료함`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            message: { type: "string", description: "로딩 메시지 (선택, 기본: 'AI가 다이어그램을 생성중입니다')" }
+          }
+        }
+      },
+      {
+        name: "hide_loading",
+        description: `웹 에디터의 로딩 화면을 숨깁니다.
+
+【사용 시점】
+다이어그램 생성이 완료된 후 호출하세요.
+
+【주의】
+show_loading을 호출한 후에는 반드시 hide_loading을 호출해야 합니다.`,
+        inputSchema: {
+          type: "object",
+          properties: {}
         }
       }
     ]
@@ -1282,14 +1362,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 【에디터 URL】 ${EDITOR_URL}
 
+⚠️⚠️⚠️ 다음 단계: show_loading 도구를 호출한 후 build_diagram을 실행하세요! ⚠️⚠️⚠️
+순서: open_editor(완료) → show_loading → build_diagram
+
 【사용 방법】
 - MCP로 추가한 요소들이 실시간으로 반영됩니다.
 - 요소를 드래그하여 위치 조정 가능
 - 요소 선택 후 우측 패널에서 속성 변경
-- 화살표 편집 모드(✏️)로 연결선 수정
-
-【동기화】
-웹 에디터에서 수정한 내용은 MCP 서버와 자동 동기화됩니다.`
+- 화살표 편집 모드(✏️)로 연결선 수정`
           }]
         };
       } else {
@@ -1311,15 +1391,21 @@ cd ${EDITOR_DIR} && npm run dev
       // 로딩 시작 알림
       notifyLoadingStart();
 
-      // 기존 세션이 있고 요소가 있으면 먼저 저장
+      // 기존 세션이 있고 요소가 있으면 먼저 저장하고 새 세션 생성
+      // 기존 세션이 있고 요소가 없으면 그 세션 재사용
+      // 기존 세션이 없으면 새 세션 생성
       if (currentSessionId && diagram.elements.length > 0) {
         await saveDiagramToCache();
         console.error(`[Session] 기존 세션 저장 완료: ${currentSessionId}`);
+        // 새 세션 생성
+        currentSessionId = generateSessionId();
+        currentSessionTitle = getDefaultSessionTitle();
+      } else if (!currentSessionId) {
+        // 세션이 없으면 새로 생성
+        currentSessionId = generateSessionId();
+        currentSessionTitle = getDefaultSessionTitle();
       }
-
-      // 새 세션 생성
-      currentSessionId = generateSessionId();
-      currentSessionTitle = getDefaultSessionTitle();
+      // else: 기존 세션이 있고 비어있으면 그대로 사용
 
       diagram = {
         elements: [],
@@ -1330,7 +1416,7 @@ cd ${EDITOR_DIR} && npm run dev
       };
       idCounter = 0;
 
-      // 새 세션 저장 및 클라이언트에 알림
+      // 세션 저장 및 클라이언트에 알림
       await saveDiagramToCache();
       notifyClientsWithSession();
       notifySessionListChange();
@@ -1350,6 +1436,8 @@ cd ${EDITOR_DIR} && npm run dev
     }
 
     case "add_component": {
+      notifyLoadingStart();
+
       const name = args?.name as string || "Component";
       const sub = args?.sub as string;
       const fontSize = args?.fontSize as number || 14;
@@ -1370,6 +1458,7 @@ cd ${EDITOR_DIR} && npm run dev
       };
       diagram.elements.push(component as Component);
       notifyClients();
+      notifyLoadingEnd();
       return {
         content: [{
           type: "text",
@@ -1379,6 +1468,8 @@ cd ${EDITOR_DIR} && npm run dev
     }
 
     case "add_zone": {
+      notifyLoadingStart();
+
       const containsIds = args?.containsIds as string[] | undefined;
       const padding = args?.padding as number || 40;
 
@@ -1419,6 +1510,7 @@ cd ${EDITOR_DIR} && npm run dev
       };
       diagram.elements.unshift(zone); // 영역은 맨 아래에
       notifyClients();
+      notifyLoadingEnd();
       return {
         content: [{
           type: "text",
@@ -1428,6 +1520,8 @@ cd ${EDITOR_DIR} && npm run dev
     }
 
     case "add_arrow": {
+      notifyLoadingStart();
+
       const fromId = args?.from as string;
       const toId = args?.to as string;
 
@@ -1452,12 +1546,15 @@ cd ${EDITOR_DIR} && npm run dev
       if (fromElement && toElement) {
         const fromWithId = { ...fromElement, id: fromId, width: (fromElement as any).width || 100, height: (fromElement as any).height || 80 };
         const toWithId = { ...toElement, id: toId, width: (toElement as any).width || 100, height: (toElement as any).height || 80 };
+        // 현재 다이어그램의 화살표 수 계산 (동적 간격용)
+        const currentArrowCount = diagram.elements.filter(el => el.type === 'arrow').length;
         calculatedWaypoints = calculateAutoWaypoints(
           fromWithId,
           toWithId,
           fromAnchor || "right",
           toAnchor || "left",
-          providedWaypoints
+          providedWaypoints,
+          currentArrowCount + 1  // 새로 추가될 화살표 포함
         );
       }
 
@@ -1470,11 +1567,15 @@ cd ${EDITOR_DIR} && npm run dev
         toAnchor: toAnchor || "left",
         waypoints: calculatedWaypoints,
         label: args?.label as string || "",
+        labels: args?.labels as string[] || undefined,
         color: args?.color as string || "#2196f3",
-        style: (args?.style as Arrow['style']) || "solid"
+        style: (args?.style as Arrow['style']) || "solid",
+        startMarker: args?.startMarker as Arrow['startMarker'] || undefined,
+        endMarker: args?.endMarker as Arrow['endMarker'] || undefined
       };
       diagram.elements.push(arrow);
       notifyClients();
+      notifyLoadingEnd();
       return {
         content: [{
           type: "text",
@@ -1484,6 +1585,8 @@ cd ${EDITOR_DIR} && npm run dev
     }
 
     case "add_note": {
+      notifyLoadingStart();
+
       const title = args?.title as string || "";
       const text = args?.text as string || "";
       const size = calculateNoteSize(title, text);
@@ -1500,6 +1603,7 @@ cd ${EDITOR_DIR} && npm run dev
       };
       diagram.elements.push(note as Note);
       notifyClients();
+      notifyLoadingEnd();
       return {
         content: [{
           type: "text",
@@ -1509,6 +1613,8 @@ cd ${EDITOR_DIR} && npm run dev
     }
 
     case "add_scenario": {
+      notifyLoadingStart();
+
       const title = args?.title as string || "Scenario";
       const subtitle = args?.subtitle as string || "";
       const desc = args?.desc as string || "";
@@ -1530,6 +1636,7 @@ cd ${EDITOR_DIR} && npm run dev
       };
       diagram.elements.push(scenario as Scenario);
       notifyClients();
+      notifyLoadingEnd();
       return {
         content: [{
           type: "text",
@@ -1733,7 +1840,9 @@ cd ${EDITOR_DIR} && npm run dev
           { x: fromComp.x, y: fromComp.y, width: fromComp.width || 100, height: fromComp.height || 80, id: fromComp.id },
           { x: toComp.x, y: toComp.y, width: toComp.width || 100, height: toComp.height || 80, id: toComp.id },
           bestAnchors.fromAnchor,
-          bestAnchors.toAnchor
+          bestAnchors.toAnchor,
+          undefined,
+          comps.length - 1  // 총 화살표 수
         );
 
         const arrow: Arrow = {
@@ -1768,15 +1877,21 @@ cd ${EDITOR_DIR} && npm run dev
       // 로딩 시작 알림
       notifyLoadingStart();
 
-      // 기존 세션이 있고 요소가 있으면 먼저 저장
+      // 기존 세션이 있고 요소가 있으면 먼저 저장하고 새 세션 생성
+      // 기존 세션이 있고 요소가 없으면 그 세션 재사용
+      // 기존 세션이 없으면 새 세션 생성
       if (currentSessionId && diagram.elements.length > 0) {
         await saveDiagramToCache();
         console.error(`[Session] 기존 세션 저장 완료: ${currentSessionId}`);
+        // 새 세션 생성
+        currentSessionId = generateSessionId();
+        currentSessionTitle = getDefaultSessionTitle();
+      } else if (!currentSessionId) {
+        // 세션이 없으면 새로 생성
+        currentSessionId = generateSessionId();
+        currentSessionTitle = getDefaultSessionTitle();
       }
-
-      // 새 세션 생성
-      currentSessionId = generateSessionId();
-      currentSessionTitle = getDefaultSessionTitle();
+      // else: 기존 세션이 있고 비어있으면 그대로 사용
 
       // Reset diagram
       diagram = {
@@ -1814,20 +1929,52 @@ cd ${EDITOR_DIR} && npm run dev
 
       // Add zones (background) - support auto-sizing with containsIndices
       const zones = (args?.zones as Array<{label: string; x?: number; y?: number; width?: number; height?: number; color?: string; containsIndices?: number[]; padding?: number}>) || [];
+
+      // 같은 zone 내 컴포넌트 사이즈 통일 (적극적으로 - 가장 큰 사이즈로 통일)
+      zones.forEach(z => {
+        if (z.containsIndices && z.containsIndices.length > 1) {
+          const validIndices = z.containsIndices.filter(i => i >= 0 && i < componentData.length);
+          if (validIndices.length > 1) {
+            // 포함된 컴포넌트들의 크기 수집
+            const sizes = validIndices.map(i => componentData[i]);
+            const maxWidth = Math.max(...sizes.map(s => s.width));
+            const maxHeight = Math.max(...sizes.map(s => s.height));
+
+            // 가장 큰 사이즈로 통일 (항상 적용)
+            validIndices.forEach(i => {
+              componentData[i].width = maxWidth;
+              componentData[i].height = maxHeight;
+              // diagram.elements의 해당 컴포넌트도 업데이트
+              const compEl = diagram.elements.find(el => el.id === componentIds[i]);
+              if (compEl && compEl.type === 'component') {
+                (compEl as any).width = maxWidth;
+                (compEl as any).height = maxHeight;
+              }
+            });
+          }
+        }
+      });
+
+      // 전체 화살표 수에 따른 동적 간격 계산
+      const totalArrowCount = (args?.arrows as Array<unknown>)?.length || 0;
+      const dynamicSpacing = calculateDynamicSpacing(totalArrowCount, 40);
+
       zones.forEach(z => {
         let x = z.x;
         let y = z.y;
         let width = z.width;
         let height = z.height;
 
-        // 자동 크기 계산 (containsIndices 사용)
+        // 자동 크기 계산 (containsIndices 사용) - 통일된 사이즈 반영
         if (z.containsIndices && z.containsIndices.length > 0) {
           const containedComps = z.containsIndices
             .filter(i => i >= 0 && i < componentData.length)
             .map(i => componentData[i]);
 
           if (containedComps.length > 0) {
-            const autoSize = calculateZoneSizeForComponents(containedComps, z.padding || 40);
+            // 요소 수에 따라 동적 패딩 적용 (사용자 지정 패딩이 없을 경우)
+            const basePadding = z.padding || dynamicSpacing.zonePadding;
+            const autoSize = calculateZoneSizeForComponents(containedComps, basePadding);
             if (x === undefined) x = autoSize.x;
             if (y === undefined) y = autoSize.y;
             if (width === undefined) width = autoSize.width;
@@ -1850,7 +1997,7 @@ cd ${EDITOR_DIR} && npm run dev
       });
 
       // Add arrows (using component indices) with auto-routing
-      const arrows = (args?.arrows as Array<{from: number; to: number; label?: string; color?: string; style?: 'solid' | 'dashed'; waypoints?: Point[]}>) || [];
+      const arrows = (args?.arrows as Array<{from: number; to: number; label?: string; labels?: string[]; color?: string; style?: 'solid' | 'dashed'; startMarker?: 'none' | 'arrow' | 'circle'; endMarker?: 'none' | 'arrow' | 'circle'; waypoints?: Point[]}>) || [];
       arrows.forEach(a => {
         if (a.from >= 0 && a.from < componentIds.length && a.to >= 0 && a.to < componentIds.length) {
           const fromComp = components[a.from];
@@ -1869,7 +2016,8 @@ cd ${EDITOR_DIR} && npm run dev
             { x: toComp.x, y: toComp.y, width: toData.width, height: toData.height, id: componentIds[a.to] },
             bestAnchors.fromAnchor,
             bestAnchors.toAnchor,
-            a.waypoints
+            a.waypoints,
+            arrows.length  // 화살표 수 전달 (동적 간격용)
           );
 
           const arrow: Arrow = {
@@ -1881,8 +2029,11 @@ cd ${EDITOR_DIR} && npm run dev
             toAnchor: bestAnchors.toAnchor,
             waypoints: calculatedWaypoints,
             label: a.label || "",
+            labels: a.labels || [],  // 추가 라벨들 (양방향 화살표용)
             color: a.color || "#2196f3",
-            style: a.style || "solid"
+            style: a.style || "solid",
+            startMarker: a.startMarker || "none",  // 시작점 형태
+            endMarker: a.endMarker || "arrow"      // 끝점 형태 (기본: arrow)
           };
           diagram.elements.push(arrow);
         }
@@ -1904,6 +2055,46 @@ cd ${EDITOR_DIR} && npm run dev
         };
         diagram.elements.push(note as Note);
       });
+
+      // 다이어그램 중앙 배치를 위한 오프셋 적용
+      const baseOffsetX = 80;   // 기본 X 오프셋
+      const baseOffsetY = 60;   // 기본 Y 오프셋 (위로 튀는 화살표 방지)
+
+      // 모든 요소에 오프셋 적용
+      diagram.elements.forEach(el => {
+        if ('x' in el && 'y' in el) {
+          (el as any).x += baseOffsetX;
+          (el as any).y += baseOffsetY;
+        }
+        // 화살표 waypoints도 오프셋 적용
+        if (el.type === 'arrow' && (el as Arrow).waypoints) {
+          (el as Arrow).waypoints = (el as Arrow).waypoints!.map(wp => ({
+            x: wp.x + baseOffsetX,
+            y: wp.y + baseOffsetY
+          }));
+        }
+      });
+
+      // 모든 요소의 최대 좌표 계산 (캔버스가 요소를 담을 수 있는지만 확인)
+      let maxX = 0;
+      let maxY = 0;
+      diagram.elements.forEach(el => {
+        if ('x' in el && 'y' in el) {
+          const elWidth = ('width' in el) ? (el as any).width : 150;
+          const elHeight = ('height' in el) ? (el as any).height : 100;
+          maxX = Math.max(maxX, (el as any).x + elWidth);
+          maxY = Math.max(maxY, (el as any).y + elHeight);
+        }
+      });
+
+      // 캔버스 크기: 요소가 벗어나면 최소한으로만 확장
+      const minMargin = 50;
+      if (maxX + minMargin > diagram.canvasSize.width) {
+        diagram.canvasSize.width = maxX + minMargin;
+      }
+      if (maxY + minMargin > diagram.canvasSize.height) {
+        diagram.canvasSize.height = maxY + minMargin;
+      }
 
       // 새 세션 저장 및 클라이언트에 알림
       await saveDiagramToCache();
@@ -1944,25 +2135,27 @@ cd ${EDITOR_DIR} && npm run dev
           type: "text",
           text: `【다이어그램 에디터 사용 가이드】
 
-【빠른 시작】
+【⚠️ 필수 순서 - 반드시 지켜주세요!】
+1. open_editor - 브라우저에서 편집기 열기
+2. show_loading - 로딩 화면 표시 ← 필수!
+3. build_diagram - 다이어그램 생성
+
+【빠른 시작 - 권장 방법】
 1. open_editor 도구를 호출하여 브라우저에서 편집기를 엽니다.
-2. create_diagram으로 새 다이어그램을 생성합니다.
-3. add_component, add_zone, add_arrow로 요소를 추가합니다.
+2. show_loading 도구로 로딩 화면을 표시합니다. (필수!)
+3. build_diagram으로 전체 다이어그램을 한 번에 생성합니다.
 4. 브라우저에서 실시간으로 결과를 확인하고 수정합니다.
 
 【주요 도구】
 - open_editor: 브라우저에서 편집기 열기
-- create_diagram: 새 다이어그램 생성
-- add_component: 컴포넌트 추가
-- add_zone: 영역 추가
-- add_arrow: 화살표 연결
-- add_note: 메모 추가
+- show_loading: 로딩 화면 표시 (build_diagram 전 필수!)
+- build_diagram: 전체 다이어그램 한 번에 생성 (권장)
 - list_elements: 요소 목록 확인
 - get_diagram: JSON 내보내기
 
-【레이아웃 팁】
-- 컴포넌트 간격: 가로 180~220px, 세로 120~160px
-- Zone 간 간격: 최소 100px 여백
+【레이아웃 팁 - 머메이드 스타일】
+- 컴포넌트 간격: 가로 350~400px, 세로 250~300px (넉넉하게!)
+- Zone 간 간격: 최소 150px 여백
 - 화살표 정리: waypoints로 경로 조정
 
 【웹 에디터 기능】
@@ -1970,6 +2163,65 @@ cd ${EDITOR_DIR} && npm run dev
 - 우측 패널에서 속성 변경
 - 화살표 편집 모드로 연결선 수정
 - PDF/PNG/JSON 내보내기`
+        }]
+      };
+    }
+
+    case "show_loading": {
+      const message = (args?.message as string) || 'AI가 다이어그램을 생성중입니다';
+
+      // 로딩 상태 설정
+      isAILoading = true;
+
+      // WebSocket 서버가 없으면 시작
+      if (!wss) {
+        startWebSocketServer();
+      }
+
+      const data = JSON.stringify({
+        type: 'loadingStart',
+        data: { message }
+      });
+
+      wsClients.forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(data);
+        }
+      });
+
+      console.error(`[MCP] 로딩 화면 표시 (연결된 클라이언트: ${wsClients.size})`);
+
+      return {
+        content: [{
+          type: "text",
+          text: wsClients.size > 0
+            ? `✅ 로딩 화면이 표시되었습니다. (연결된 클라이언트: ${wsClients.size})\n\n👉 이제 build_diagram 도구로 다이어그램을 생성하세요!`
+            : `⚠️ 연결된 클라이언트가 없습니다. open_editor를 먼저 호출하세요.`
+        }]
+      };
+    }
+
+    case "hide_loading": {
+      // 로딩 상태 해제
+      isAILoading = false;
+
+      const data = JSON.stringify({
+        type: 'loadingEnd',
+        data: {}
+      });
+
+      wsClients.forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(data);
+        }
+      });
+
+      console.error('[MCP] 로딩 화면 숨김');
+
+      return {
+        content: [{
+          type: "text",
+          text: "로딩 화면이 숨겨졌습니다."
         }]
       };
     }
@@ -2024,38 +2276,102 @@ const WS_PORT = config.wsPort;
 let wss: WebSocketServer | null = null;
 const wsClients: Set<WebSocket> = new Set();
 
-// Auto-shutdown timer (1 minute after last activity)
-let autoShutdownTimer: ReturnType<typeof setTimeout> | null = null;
-const AUTO_SHUTDOWN_MS = 60000; // 1분
+// WebSocket auto-shutdown timer (1 minute after no clients)
+let wsAutoShutdownTimer: ReturnType<typeof setTimeout> | null = null;
+const WS_AUTO_SHUTDOWN_MS = 60 * 1000; // 1분
 
-// Reset auto-shutdown timer
-function resetAutoShutdownTimer() {
-  if (autoShutdownTimer) {
-    clearTimeout(autoShutdownTimer);
+// Full server auto-shutdown timer (1 hour after no activity)
+let fullShutdownTimer: ReturnType<typeof setTimeout> | null = null;
+const FULL_SHUTDOWN_MS = 60 * 60 * 1000; // 1시간
+let httpServerRef: ReturnType<typeof app.listen> | null = null;
+
+// Reset WebSocket auto-shutdown timer (1분)
+function resetWsAutoShutdownTimer() {
+  if (wsAutoShutdownTimer) {
+    clearTimeout(wsAutoShutdownTimer);
   }
-  autoShutdownTimer = setTimeout(() => {
+  wsAutoShutdownTimer = setTimeout(() => {
     console.error('[WebSocket] 1분간 활동 없음 - WebSocket 서버 종료');
     stopWebSocketServer();
-  }, AUTO_SHUTDOWN_MS);
+  }, WS_AUTO_SHUTDOWN_MS);
+}
+
+// Reset full server shutdown timer (1시간)
+function resetFullShutdownTimer() {
+  if (fullShutdownTimer) {
+    clearTimeout(fullShutdownTimer);
+  }
+  fullShutdownTimer = setTimeout(() => {
+    stopAllServers();
+  }, FULL_SHUTDOWN_MS);
+}
+
+// Stop all servers (WebSocket + HTTP + Vite Frontend)
+function stopAllServers() {
+  // WebSocket 서버 종료
+  stopWebSocketServer();
+
+  // HTTP API 서버 종료
+  if (httpServerRef) {
+    httpServerRef.close();
+    httpServerRef = null;
+  }
+
+  // Vite Frontend 프로세스 종료
+  if (editorProcess) {
+    try {
+      // detached 프로세스이므로 프로세스 그룹 전체 종료
+      if (process.platform === 'win32') {
+        exec(`taskkill /pid ${editorProcess.pid} /T /F`);
+      } else {
+        process.kill(-editorProcess.pid!, 'SIGTERM');
+      }
+    } catch (e) {
+      // 이미 종료된 경우 무시
+    }
+    editorProcess = null;
+  }
+
+  // 타이머 정리
+  if (fullShutdownTimer) {
+    clearTimeout(fullShutdownTimer);
+    fullShutdownTimer = null;
+  }
 }
 
 // Start WebSocket server
 function startWebSocketServer() {
   if (wss) {
     console.error('[WebSocket] 이미 실행 중');
-    resetAutoShutdownTimer();
+    resetWsAutoShutdownTimer();
+    resetFullShutdownTimer();
     return;
   }
 
-  wss = new WebSocketServer({ port: WS_PORT });
-  console.error(`[WebSocket] 서버 시작 - 포트 ${WS_PORT}`);
+  try {
+    wss = new WebSocketServer({ port: WS_PORT });
+    console.error(`[WebSocket] 서버 시작 - 포트 ${WS_PORT}`);
+  } catch (e) {
+    console.error(`[WebSocket] 서버 시작 실패 - 포트 ${WS_PORT} 이미 사용 중`);
+    return;
+  }
 
   wss.on('connection', (ws) => {
     wsClients.add(ws);
     console.error(`[WebSocket] 클라이언트 연결됨, 총: ${wsClients.size}`);
 
-    // Reset shutdown timer on new connection
-    resetAutoShutdownTimer();
+    // Reset shutdown timers on new connection
+    resetWsAutoShutdownTimer();
+    resetFullShutdownTimer();
+
+    // AI가 현재 로딩 중이면 먼저 loadingStart 전송
+    if (isAILoading) {
+      ws.send(JSON.stringify({
+        type: 'loadingStart',
+        data: { message: 'AI가 다이어그램을 생성중입니다' }
+      }));
+      console.error('[WebSocket] 새 클라이언트에게 로딩 상태 전송');
+    }
 
     // Send initial data
     const initialData = JSON.stringify({
@@ -2069,8 +2385,9 @@ function startWebSocketServer() {
     ws.send(initialData);
 
     ws.on('message', (message) => {
-      // Reset timer on any activity
-      resetAutoShutdownTimer();
+      // Reset timers on any activity
+      resetWsAutoShutdownTimer();
+      resetFullShutdownTimer();
 
       try {
         const parsed = JSON.parse(message.toString());
@@ -2095,15 +2412,16 @@ function startWebSocketServer() {
     console.error('[WebSocket] 서버 오류:', error.message);
   });
 
-  // Start auto-shutdown timer
-  resetAutoShutdownTimer();
+  // Start auto-shutdown timers
+  resetWsAutoShutdownTimer();
+  resetFullShutdownTimer();
 }
 
 // Stop WebSocket server
 function stopWebSocketServer() {
-  if (autoShutdownTimer) {
-    clearTimeout(autoShutdownTimer);
-    autoShutdownTimer = null;
+  if (wsAutoShutdownTimer) {
+    clearTimeout(wsAutoShutdownTimer);
+    wsAutoShutdownTimer = null;
   }
 
   if (wss) {
@@ -2131,8 +2449,9 @@ async function notifyClients() {
     startWebSocketServer();
   }
 
-  // Reset shutdown timer on activity
-  resetAutoShutdownTimer();
+  // Reset shutdown timers on activity
+  resetWsAutoShutdownTimer();
+  resetFullShutdownTimer();
 
   // Send to all clients
   notifyClientsWithSession();
@@ -2179,11 +2498,15 @@ function notifySessionListChange() {
 
 // Notify clients that AI is generating (loading start)
 function notifyLoadingStart() {
+  // 로딩 상태 설정
+  isAILoading = true;
+
   // Start WebSocket server if not running
   if (!wss) {
     startWebSocketServer();
   }
-  resetAutoShutdownTimer();
+  resetWsAutoShutdownTimer();
+  resetFullShutdownTimer();
 
   const data = JSON.stringify({
     type: 'loadingStart',
@@ -2201,6 +2524,9 @@ function notifyLoadingStart() {
 
 // Notify clients that AI generation is complete (loading end)
 function notifyLoadingEnd() {
+  // 로딩 상태 해제
+  isAILoading = false;
+
   const data = JSON.stringify({
     type: 'loadingEnd',
     data: {}
@@ -2242,6 +2568,12 @@ async function saveDiagramToCache() {
     console.error('[Cache] Failed to save diagram:', error);
   }
 }
+
+// HTTP 요청 시 1시간 자동 종료 타이머 리셋 (활동 감지)
+app.use((req, res, next) => {
+  resetFullShutdownTimer();
+  next();
+});
 
 // WebSocket info endpoint (for clients to check WebSocket port)
 app.get("/api/ws-info", (req, res) => {
@@ -2478,17 +2810,17 @@ app.put("/api/session/current", async (req, res) => {
 
     res.json({ success: true, sessionId: currentSessionId, sessionTitle: currentSessionTitle });
   } catch (error) {
-    console.error('[Session] 세션 전환 중 오류:', error);
     res.status(500).json({ error: 'Failed to switch session' });
   }
 });
 
 // Start HTTP server with error handling
-const httpServer = app.listen(HTTP_PORT)
+httpServerRef = app.listen(HTTP_PORT)
   .on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
       // Port already in use - another instance is running, skip HTTP server
       // MCP server will still work, just won't have its own HTTP API
+      httpServerRef = null;
     } else {
       // Re-throw other errors
       throw err;
@@ -2499,12 +2831,15 @@ const httpServer = app.listen(HTTP_PORT)
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Diagram Editor MCP Server running on stdio");
+
 
   // Start WebSocket server automatically when MCP server starts
   // This ensures WebSocket is available even if HTTP port is in use
   startWebSocketServer();
-  console.error("[MCP] WebSocket 서버 자동 시작됨");
+
+
+  // Start full shutdown timer (1시간 비활성 시 전체 종료)
+  resetFullShutdownTimer();
 }
 
 main().catch(console.error);

@@ -14,6 +14,8 @@ export class MCPClient extends EventEmitter {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectDelay = 2000;
+  private isAILoading = false;  // AI 로딩 중 플래그
+  private pendingDiagram: any = null;  // 로딩 중 받은 다이어그램 데이터
 
   constructor(state: State) {
     super();
@@ -55,39 +57,27 @@ export class MCPClient extends EventEmitter {
         const message = JSON.parse(event.data);
 
         if (message.type === 'loadingStart') {
+          this.isAILoading = true;
+          this.pendingDiagram = null;
           this.showLoadingModal();
         } else if (message.type === 'loadingEnd') {
+          // 로딩 완료 - 대기 중인 다이어그램이 있으면 렌더링
+          if (this.pendingDiagram) {
+            this.applyDiagramData(this.pendingDiagram);
+            this.pendingDiagram = null;
+          }
+          this.isAILoading = false;
           this.hideLoadingModal();
         } else if (message.type === 'diagram') {
           const data = message.data;
-          this.isSyncingFromServer = true;
 
-          // 세션 정보가 있으면 state에 설정
-          if (data.sessionId) {
-            this.state.setSessionMetadata({
-              id: data.sessionId,
-              title: data.sessionTitle || ''
-            });
+          if (this.isAILoading) {
+            // 로딩 중이면 데이터를 저장만 하고 렌더링하지 않음
+            this.pendingDiagram = data;
+          } else {
+            // 로딩 중이 아니면 즉시 렌더링
+            this.applyDiagramData(data);
           }
-
-          const result = this.state.fromJSON(JSON.stringify({
-            elements: data.elements,
-            canvasSize: data.canvasSize
-          }));
-          if (!result.success) {
-            console.warn('서버 데이터 파싱 실패:', result.error);
-          }
-          this.state.expandCanvasToFitElements();
-
-          // 데이터 수신 후 캐시 저장을 위해 이벤트 발생
-          this.emit('dataReceived', {
-            sessionId: data.sessionId,
-            sessionTitle: data.sessionTitle,
-            elements: data.elements,
-            canvasSize: data.canvasSize
-          });
-
-          this.isSyncingFromServer = false;
         } else if (message.type === 'sessionListChange') {
           this.emit('sessionListChange');
         }
@@ -198,6 +188,38 @@ export class MCPClient extends EventEmitter {
     } catch (error) {
       console.error('다이어그램 초기화 실패:', error);
     }
+  }
+
+  // 다이어그램 데이터 적용
+  private applyDiagramData(data: any): void {
+    this.isSyncingFromServer = true;
+
+    // 세션 정보가 있으면 state에 설정
+    if (data.sessionId) {
+      this.state.setSessionMetadata({
+        id: data.sessionId,
+        title: data.sessionTitle || ''
+      });
+    }
+
+    const result = this.state.fromJSON(JSON.stringify({
+      elements: data.elements,
+      canvasSize: data.canvasSize
+    }));
+    if (!result.success) {
+      console.warn('서버 데이터 파싱 실패:', result.error);
+    }
+    this.state.expandCanvasToFitElements();
+
+    // 데이터 수신 후 캐시 저장을 위해 이벤트 발생
+    this.emit('dataReceived', {
+      sessionId: data.sessionId,
+      sessionTitle: data.sessionTitle,
+      elements: data.elements,
+      canvasSize: data.canvasSize
+    });
+
+    this.isSyncingFromServer = false;
   }
 
   // Show loading modal

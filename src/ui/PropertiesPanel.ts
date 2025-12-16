@@ -164,6 +164,7 @@ export class PropertiesPanel {
 
   private renderZoneProps(zone: ZoneData): void {
     const t = i18n.t;
+    const isLocked = zone.lockElements ?? false;
     this.content.innerHTML = `
       <div class="prop-row">
         <label>${t.label}</label>
@@ -173,6 +174,14 @@ export class PropertiesPanel {
         <label>${t.backgroundColor}</label>
         <input type="color" data-prop="color" value="${zone.color}">
       </div>
+      <div class="prop-row toggle-row">
+        <label>${t.lockElements}</label>
+        <label class="toggle-switch">
+          <input type="checkbox" data-prop="lockElements" ${isLocked ? 'checked' : ''}>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <p style="font-size:0.7em;color:#888;margin:-8px 0 12px 0;padding-left:4px;">${t.lockElementsHint}</p>
       <div class="prop-row">
         <label>${t.position}</label>
         <div style="display:flex;gap:8px;">
@@ -203,16 +212,41 @@ export class PropertiesPanel {
       <button class="delete-btn" data-action="delete">${t.deleteElement}</button>
     `;
     this.bindPropInputs(zone.id);
+    this.bindLockElementsToggle(zone.id);
+  }
+
+  private bindLockElementsToggle(zoneId: string): void {
+    const checkbox = this.content.querySelector('[data-prop="lockElements"]') as HTMLInputElement;
+    if (checkbox) {
+      checkbox.addEventListener('change', () => {
+        this.state.updateElementWithHistory(zoneId, { lockElements: checkbox.checked });
+      });
+    }
   }
 
   private renderArrowProps(arrow: ArrowData): void {
     const t = i18n.t;
     const currentStartMarker = arrow.startMarker || 'none';
     const currentEndMarker = arrow.endMarker ?? 'arrow';
+    const extraLabels = arrow.labels || [];
+
     this.content.innerHTML = `
       <div class="prop-row">
         <label>${t.label}</label>
-        <input type="text" data-prop="label" value="${this.escapeAttr(arrow.label)}">
+        <input type="text" data-prop="label" value="${this.escapeAttr(arrow.label)}" placeholder="${t.labelPlaceholder}">
+      </div>
+      ${extraLabels.map((lbl, idx) => `
+        <div class="prop-row extra-label-row" data-label-index="${idx}">
+          <label>${t.label} ${idx + 2}</label>
+          <div style="display:flex;gap:4px;">
+            <input type="text" data-extra-label="${idx}" value="${this.escapeAttr(lbl)}" style="flex:1" placeholder="${t.labelPlaceholder}">
+            <button class="remove-label-btn" data-remove-label="${idx}" title="${t.removeLabel}">×</button>
+          </div>
+        </div>
+      `).join('')}
+      <div class="prop-row">
+        <button class="add-label-btn" data-action="add-label">+ ${t.addLabel}</button>
+        <p style="font-size:0.7em;color:#666;margin-top:4px;">${t.addLabelHint}</p>
       </div>
       <div class="prop-row">
         <label>${t.color}</label>
@@ -275,6 +309,26 @@ export class PropertiesPanel {
     `;
     this.bindPropInputs(arrow.id);
     this.bindOpacitySlider();
+    this.bindExtraLabelInputs(arrow.id);
+
+    // Add label button
+    const addLabelBtn = this.content.querySelector('[data-action="add-label"]');
+    if (addLabelBtn) {
+      addLabelBtn.addEventListener('click', () => {
+        const currentLabels = (this.state.getElement(arrow.id) as ArrowData).labels || [];
+        this.state.updateElementWithHistory(arrow.id, { labels: [...currentLabels, ''] });
+      });
+    }
+
+    // Remove label buttons
+    this.content.querySelectorAll('[data-remove-label]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const idx = parseInt((e.target as HTMLElement).getAttribute('data-remove-label') || '0');
+        const currentLabels = [...((this.state.getElement(arrow.id) as ArrowData).labels || [])];
+        currentLabels.splice(idx, 1);
+        this.state.updateElementWithHistory(arrow.id, { labels: currentLabels });
+      });
+    });
 
     // Make orthogonal button
     const orthogonalBtn = this.content.querySelector('[data-action="make-orthogonal"]');
@@ -291,6 +345,21 @@ export class PropertiesPanel {
         this.state.updateElementWithHistory(arrow.id, { waypoints: [] });
       });
     }
+  }
+
+  // 추가 라벨 입력 바인딩
+  private bindExtraLabelInputs(elementId: string): void {
+    this.content.querySelectorAll('[data-extra-label]').forEach(input => {
+      const inputEl = input as HTMLInputElement;
+      const idx = parseInt(inputEl.getAttribute('data-extra-label') || '0');
+
+      inputEl.addEventListener('change', () => {
+        const arrow = this.state.getElement(elementId) as ArrowData;
+        const currentLabels = [...(arrow.labels || [])];
+        currentLabels[idx] = inputEl.value;
+        this.state.updateElement(elementId, { labels: currentLabels });
+      });
+    });
   }
 
   // 화살표를 직각으로 정렬 (컴포넌트 우회 포함)

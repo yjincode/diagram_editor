@@ -234,6 +234,14 @@ body {
   font-size: 0.7em;
 }
 
+.session-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.session-edit-btn,
 .session-delete-btn {
   opacity: 0;
   background: none;
@@ -244,15 +252,63 @@ body {
   transition: opacity 0.15s, color 0.15s;
   font-size: 1em;
   line-height: 1;
-  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
+.session-item:hover .session-edit-btn,
 .session-item:hover .session-delete-btn {
   opacity: 1;
 }
 
+.session-edit-btn:hover {
+  color: #2196f3;
+}
+
 .session-delete-btn:hover {
   color: #f44336;
+}
+
+/* Add Label Button */
+.add-label-btn {
+  background: #e3f2fd;
+  border: 1px solid #90caf9;
+  color: #1976d2;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85em;
+  width: 100%;
+  transition: background 0.15s;
+}
+
+.add-label-btn:hover {
+  background: #bbdefb;
+}
+
+/* Remove Label Button */
+.remove-label-btn {
+  background: #ffebee;
+  border: 1px solid #ef9a9a;
+  color: #c62828;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1em;
+  line-height: 1;
+  transition: background 0.15s;
+}
+
+.remove-label-btn:hover {
+  background: #ffcdd2;
+}
+
+.extra-label-row {
+  background: rgba(255,255,255,0.03);
+  border-radius: 4px;
+  padding: 8px;
+  margin: -4px 0;
 }
 
 .session-empty {
@@ -469,13 +525,30 @@ body {
 
 .zone-resize {
   position: absolute;
-  right: -4px;
-  bottom: -4px;
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   background: white;
   border: 2px solid;
   border-radius: 2px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 10;
+}
+
+.zone:hover .zone-resize,
+.zone.selected .zone-resize {
+  opacity: 1;
+}
+
+.zone-resize-tl {
+  left: -5px;
+  top: -5px;
+  cursor: nw-resize;
+}
+
+.zone-resize-br {
+  right: -5px;
+  bottom: -5px;
   cursor: se-resize;
 }
 
@@ -942,6 +1015,64 @@ body {
   border-radius: 50%;
   cursor: pointer;
   border: none;
+}
+
+/* Toggle Switch */
+.toggle-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.toggle-row label:first-child {
+  margin-bottom: 0;
+}
+
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  margin-bottom: 0 !important;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #ccc;
+  transition: 0.3s;
+  border-radius: 24px;
+}
+
+.toggle-slider:before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  transition: 0.3s;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background-color: #2196f3;
+}
+
+.toggle-switch input:checked + .toggle-slider:before {
+  transform: translateX(20px);
 }
 
 /* Arrow marker select with visual icons */

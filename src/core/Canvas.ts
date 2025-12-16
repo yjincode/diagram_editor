@@ -9,6 +9,8 @@ export class Canvas {
   private state: State;
   private resizeHandles: HTMLElement[] = [];
   private renderedLabels: { x: number; y: number; width: number; height: number }[] = [];
+  // 앵커별 화살표 오프셋 맵: "arrowId:from|to" -> offset Point
+  private anchorOffsetMap: Map<string, Point> = new Map();
 
   constructor(state: State) {
     this.state = state;
@@ -184,6 +186,9 @@ export class Canvas {
     notes.forEach(n => this.renderNote(n));
     scenarios.forEach(s => this.renderScenario(s));
 
+    // 앵커별 화살표 오프셋 맵 계산
+    this.anchorOffsetMap = this.calculateAnchorOffsets(arrows);
+
     // 선택되지 않은 화살표는 기본 레이어에
     const unselectedArrows = arrows.filter(a => !this.state.selectedIds.has(a.id));
     const selectedArrows = arrows.filter(a => this.state.selectedIds.has(a.id));
@@ -216,7 +221,8 @@ export class Canvas {
 
     el.innerHTML = `
       <span class="zone-label" style="color: ${this.darken(zone.color)}">${zone.label}</span>
-      <div class="zone-resize" style="border-color: ${zone.color}"></div>
+      <div class="zone-resize zone-resize-tl" data-resize="tl" style="border-color: ${zone.color}"></div>
+      <div class="zone-resize zone-resize-br" data-resize="br" style="border-color: ${zone.color}"></div>
       <div class="anchor top" data-anchor="top"></div>
       <div class="anchor bottom" data-anchor="bottom"></div>
       <div class="anchor left" data-anchor="left"></div>
@@ -442,14 +448,89 @@ export class Canvas {
     this.canvas.appendChild(el);
   }
 
+  // 같은 앵커를 공유하는 화살표들의 오프셋 계산
+  private calculateAnchorOffsets(arrows: ArrowData[]): Map<string, Point> {
+    const offsetMap = new Map<string, Point>();
+
+    // 앵커 키별로 화살표 그룹화: "elementId:anchor:from|to"
+    const anchorGroups = new Map<string, { arrowId: string; isFrom: boolean }[]>();
+
+    arrows.forEach(arrow => {
+      // from 앵커 그룹화
+      const fromKey = `${arrow.from}:${arrow.fromAnchor}`;
+      if (!anchorGroups.has(fromKey)) {
+        anchorGroups.set(fromKey, []);
+      }
+      anchorGroups.get(fromKey)!.push({ arrowId: arrow.id, isFrom: true });
+
+      // to 앵커 그룹화
+      const toKey = `${arrow.to}:${arrow.toAnchor}`;
+      if (!anchorGroups.has(toKey)) {
+        anchorGroups.set(toKey, []);
+      }
+      anchorGroups.get(toKey)!.push({ arrowId: arrow.id, isFrom: false });
+    });
+
+    // 각 그룹에 대해 오프셋 계산
+    anchorGroups.forEach((group, anchorKey) => {
+      if (group.length <= 1) {
+        // 혼자면 오프셋 없음
+        group.forEach(({ arrowId, isFrom }) => {
+          offsetMap.set(`${arrowId}:${isFrom ? 'from' : 'to'}`, { x: 0, y: 0 });
+        });
+        return;
+      }
+
+      // 앵커 방향 추출
+      const anchor = anchorKey.split(':')[1] as AnchorPosition;
+
+      // 화살표 수에 따라 간격 동적 조절 (많을수록 더 넓게)
+      // 2개: 6px, 3개: 8px, 4개: 10px, 5개 이상: 12px
+      const baseSpacing = Math.min(12, 4 + group.length * 2);
+
+      // 그룹 내 화살표들에 오프셋 할당
+      group.forEach(({ arrowId, isFrom }, index) => {
+        // 중앙을 기준으로 양쪽으로 퍼지도록
+        const offset = (index - (group.length - 1) / 2) * baseSpacing;
+
+        // 앵커 방향에 수직으로 오프셋 적용
+        let offsetPoint: Point;
+        if (anchor === 'top' || anchor === 'bottom') {
+          // 세로 앵커 -> x 방향으로 오프셋
+          offsetPoint = { x: offset, y: 0 };
+        } else {
+          // 가로 앵커 -> y 방향으로 오프셋
+          offsetPoint = { x: 0, y: offset };
+        }
+
+        offsetMap.set(`${arrowId}:${isFrom ? 'from' : 'to'}`, offsetPoint);
+      });
+    });
+
+    return offsetMap;
+  }
+
+  // 오프셋이 적용된 앵커 포인트 반환
+  private getAnchorPointWithOffset(element: HTMLElement, anchor: AnchorPosition, arrowId: string, isFrom: boolean): Point {
+    const basePoint = this.getAnchorPoint(element, anchor);
+    const offsetKey = `${arrowId}:${isFrom ? 'from' : 'to'}`;
+    const offset = this.anchorOffsetMap.get(offsetKey) || { x: 0, y: 0 };
+
+    return {
+      x: basePoint.x + offset.x,
+      y: basePoint.y + offset.y
+    };
+  }
+
   private renderArrow(arrow: ArrowData, _renderEndpoints = true, targetLayer?: SVGSVGElement): void {
     const fromEl = document.getElementById(arrow.from);
     const toEl = document.getElementById(arrow.to);
     if (!fromEl || !toEl) return;
 
     const layer = targetLayer || this.svgLayer;
-    const fromPoint = this.getAnchorPoint(fromEl, arrow.fromAnchor);
-    const toPoint = this.getAnchorPoint(toEl, arrow.toAnchor);
+    // 오프셋이 적용된 앵커 포인트 사용
+    const fromPoint = this.getAnchorPointWithOffset(fromEl, arrow.fromAnchor, arrow.id, true);
+    const toPoint = this.getAnchorPointWithOffset(toEl, arrow.toAnchor, arrow.id, false);
 
     const colorId = arrow.color.replace('#', '');
     const isSelected = this.state.selectedIds.has(arrow.id);
@@ -533,45 +614,55 @@ export class Canvas {
       });
     }
 
-    // Render label
-    if (arrow.label) {
+    // Render labels (main label + extra labels)
+    const allLabels = [arrow.label, ...(arrow.labels || [])].filter(l => l && l.trim());
+
+    if (allLabels.length > 0) {
       const midPoint = this.getPathMidpoint(fromPoint, toPoint, arrow.waypoints);
 
-      const textWidth = arrow.label.length * 7 + 12;
-      const textHeight = 18;
+      // 라벨 개수에 따른 오프셋 계산
+      const labelSpacing = 20; // 라벨 간 간격
+      const totalHeight = allLabels.length * labelSpacing;
+      const startOffset = -(totalHeight - labelSpacing) / 2;
 
-      // Calculate label position with overlap avoidance
-      const labelPos = this.findNonOverlappingPosition(
-        midPoint.x - textWidth / 2,
-        midPoint.y - 9,
-        textWidth,
-        textHeight
-      );
+      allLabels.forEach((labelText, idx) => {
+        const textWidth = labelText.length * 7 + 12;
+        const textHeight = 18;
+        const yOffset = startOffset + idx * labelSpacing;
 
-      const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      bg.setAttribute('x', String(labelPos.x));
-      bg.setAttribute('y', String(labelPos.y));
-      bg.setAttribute('width', String(textWidth));
-      bg.setAttribute('height', String(textHeight));
-      bg.setAttribute('rx', '4');
-      bg.setAttribute('fill', 'white');
-      bg.setAttribute('stroke', arrow.color);
-      bg.setAttribute('stroke-width', '1');
-      bg.classList.add('arrow-label-bg');
+        // Calculate label position with overlap avoidance
+        const labelPos = this.findNonOverlappingPosition(
+          midPoint.x - textWidth / 2,
+          midPoint.y - 9 + yOffset,
+          textWidth,
+          textHeight
+        );
 
-      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      text.setAttribute('x', String(labelPos.x + textWidth / 2));
-      text.setAttribute('y', String(labelPos.y + 13));
-      text.setAttribute('text-anchor', 'middle');
-      text.setAttribute('fill', arrow.color);
-      text.classList.add('arrow-label');
-      text.textContent = arrow.label;
+        const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        bg.setAttribute('x', String(labelPos.x));
+        bg.setAttribute('y', String(labelPos.y));
+        bg.setAttribute('width', String(textWidth));
+        bg.setAttribute('height', String(textHeight));
+        bg.setAttribute('rx', '4');
+        bg.setAttribute('fill', 'white');
+        bg.setAttribute('stroke', arrow.color);
+        bg.setAttribute('stroke-width', '1');
+        bg.classList.add('arrow-label-bg');
 
-      layer.appendChild(bg);
-      layer.appendChild(text);
+        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        text.setAttribute('x', String(labelPos.x + textWidth / 2));
+        text.setAttribute('y', String(labelPos.y + 13));
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('fill', arrow.color);
+        text.classList.add('arrow-label');
+        text.textContent = labelText;
 
-      // Track this label for future overlap detection
-      this.renderedLabels.push({ x: labelPos.x, y: labelPos.y, width: textWidth, height: textHeight });
+        layer.appendChild(bg);
+        layer.appendChild(text);
+
+        // Track this label for future overlap detection
+        this.renderedLabels.push({ x: labelPos.x, y: labelPos.y, width: textWidth, height: textHeight });
+      });
     }
   }
 
@@ -687,8 +778,9 @@ export class Canvas {
     // Endpoint는 선택된 화살표에만 표시 (크게!)
     if (!isSelected) return;
 
-    const fromPoint = this.getAnchorPoint(fromEl, arrow.fromAnchor);
-    const toPoint = this.getAnchorPoint(toEl, arrow.toAnchor);
+    // 오프셋이 적용된 앵커 포인트 사용
+    const fromPoint = this.getAnchorPointWithOffset(fromEl, arrow.fromAnchor, arrow.id, true);
+    const toPoint = this.getAnchorPointWithOffset(toEl, arrow.toAnchor, arrow.id, false);
 
     // 선택된 화살표의 endpoint는 매우 크게 (r=16)
     const endpointRadius = 16;

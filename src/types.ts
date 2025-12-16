@@ -40,6 +40,7 @@ export interface ZoneData extends BaseElement {
   color: string;
   width: number;
   height: number;
+  lockElements?: boolean;  // 내부 요소 고정 (함께 이동)
 }
 
 export interface ArrowData {
@@ -50,7 +51,8 @@ export interface ArrowData {
   to: string;
   toAnchor: AnchorPosition;
   waypoints: Point[];
-  label: string;
+  label: string;           // 메인 라벨 (하위 호환성)
+  labels?: string[];       // 추가 라벨들 (양방향 등에 사용)
   color: string;
   style: 'solid' | 'dashed';
   startMarker?: ArrowMarkerType;  // 시작점 형태 (기본: none)

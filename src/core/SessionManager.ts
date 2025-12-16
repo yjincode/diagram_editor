@@ -1,6 +1,7 @@
 import { State } from './State';
 import { EventEmitter } from './EventEmitter';
 import { SessionData, SessionListItem } from '../types';
+import { t } from '../i18n';
 
 // Use relative URL - works with Vite dev server directly
 const API_BASE = '/api';
@@ -9,11 +10,12 @@ const SESSIONS_DATA_KEY = 'diagram-editor-session-data';
 
 export class SessionManager extends EventEmitter {
   private state: State;
-  private saveDebounceTimer: number | null = null;
   private autoSaveInterval: number | null = null;
-  private readonly DEBOUNCE_MS = 500;
-  private readonly AUTO_SAVE_INTERVAL_MS = 30000; // 30초마다 자동 저장
+  private readonly AUTO_SAVE_INTERVAL_MS = 30000; // 30초마다 로컬스토리지 저장
   private isServerAvailable = false;
+  private isDirty = false; // 변경사항 추적
+  private saveDebounceTimer: number | null = null;
+  private readonly SAVE_DEBOUNCE_MS = 1500; // 1.5초 debounce
 
   constructor(state: State) {
     super();
@@ -24,27 +26,44 @@ export class SessionManager extends EventEmitter {
   }
 
   private bindStateEvents(): void {
-    // Auto-save on element changes (debounced)
+    // 요소 변경 시 dirty 플래그 설정 및 로컬스토리지에만 저장 (debounce 적용)
     this.state.on('elementsChange', () => {
       if (this.state.sessionId && this.hasElements()) {
-        this.scheduleSave();
+        this.isDirty = true;
+        this.debouncedSaveToLocalStorage();
       }
     });
   }
 
+  private debouncedSaveToLocalStorage(): void {
+    // 기존 타이머 취소
+    if (this.saveDebounceTimer !== null) {
+      window.clearTimeout(this.saveDebounceTimer);
+    }
+    // 새 타이머 설정 (1.5초 후 저장)
+    this.saveDebounceTimer = window.setTimeout(() => {
+      this.saveToLocalStorage();
+      this.saveDebounceTimer = null;
+    }, this.SAVE_DEBOUNCE_MS);
+  }
+
   private bindWindowEvents(): void {
-    // 페이지 떠날 때 저장
+    // 페이지 떠날 때 서버에 저장
     window.addEventListener('beforeunload', () => {
-      if (this.hasElements()) {
-        this.saveCurrentSessionSync();
+      // pending debounce가 있으면 즉시 저장
+      if (this.saveDebounceTimer !== null) {
+        window.clearTimeout(this.saveDebounceTimer);
+        this.saveToLocalStorage();
+      }
+      if (this.hasElements() && this.isDirty) {
+        this.saveToServerSync();
       }
     });
 
-    // 탭 숨김/표시 시 저장
+    // 탭 숨김 시 서버에 저장
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden && this.state.sessionId && this.hasElements()) {
-        this.cancelScheduledSave();
-        this.saveCurrentSession();
+      if (document.hidden && this.state.sessionId && this.hasElements() && this.isDirty) {
+        this.saveToServer();
       }
     });
   }
@@ -52,89 +71,111 @@ export class SessionManager extends EventEmitter {
   private startAutoSaveInterval(): void {
     this.autoSaveInterval = window.setInterval(() => {
       if (this.state.sessionId && this.hasElements()) {
-        this.saveCurrentSession();
+        this.saveToLocalStorage();
       }
     }, this.AUTO_SAVE_INTERVAL_MS);
   }
 
-  // 정리 (필요 시 호출)
   destroy(): void {
     if (this.autoSaveInterval !== null) {
       window.clearInterval(this.autoSaveInterval);
       this.autoSaveInterval = null;
     }
-    this.cancelScheduledSave();
-  }
-
-  // 요소가 있는지 확인
-  private hasElements(): boolean {
-    return this.state.elements.size > 0;
-  }
-
-  // 동기적 저장 (beforeunload용)
-  private saveCurrentSessionSync(): void {
-    if (!this.state.sessionId || !this.hasElements()) return;
-
-    const sessionData = this.state.toSessionJSON();
-    const xhr = new XMLHttpRequest();
-    xhr.open('PUT', `${API_BASE}/sessions/${this.state.sessionId}`, false); // sync
-    xhr.setRequestHeader('Content-Type', 'application/json');
-    xhr.send(JSON.stringify(sessionData));
-  }
-
-  // Generate default session title (date + time in minutes)
-  getDefaultTitle(): string {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const hours = String(now.getHours()).padStart(2, '0');
-    const minutes = String(now.getMinutes()).padStart(2, '0');
-    return `${year}-${month}-${day} ${hours}:${minutes}`;
-  }
-
-  // Generate session ID
-  private generateSessionId(): string {
-    return `session_${Date.now().toString(36)}_${Math.random().toString(36).substr(2, 9)}`;
-  }
-
-  // Schedule a save operation (debounced)
-  private scheduleSave(): void {
-    this.cancelScheduledSave();
-    this.saveDebounceTimer = window.setTimeout(() => {
-      this.saveCurrentSession();
-    }, this.DEBOUNCE_MS);
-  }
-
-  // Cancel pending save
-  private cancelScheduledSave(): void {
     if (this.saveDebounceTimer !== null) {
       window.clearTimeout(this.saveDebounceTimer);
       this.saveDebounceTimer = null;
     }
   }
 
-  // Get session list (server first, then localStorage fallback)
-  async getSessionList(): Promise<SessionListItem[]> {
+  private hasElements(): boolean {
+    return this.state.elements.size > 0;
+  }
+
+  // 로컬스토리지에만 저장 (빠른 캐시)
+  private saveToLocalStorage(): void {
+    if (!this.state.sessionId) return;
+
+    const sessionData = this.state.toSessionJSON();
+    sessionData.lastSavedAt = new Date().toISOString();
+
+    this.cacheSessionData(sessionData);
+    console.log('[캐시저장됨] 세션:', sessionData.id, '요소:', sessionData.elements.length, '개');
+  }
+
+  // 서버에 저장 (세션 전환 시)
+  private async saveToServer(): Promise<void> {
+    if (!this.state.sessionId || !this.hasElements()) return;
+
+    const sessionData = this.state.toSessionJSON();
+    sessionData.lastSavedAt = new Date().toISOString();
+
     try {
-      const response = await fetch(`${API_BASE}/sessions`, {
-        signal: AbortSignal.timeout(2000) // 2초 타임아웃
+      const response = await fetch(`${API_BASE}/sessions/${this.state.sessionId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sessionData),
+        signal: AbortSignal.timeout(3000)
       });
-      if (!response.ok) throw new Error('Server error');
-
-      const sessions = await response.json();
-      this.isServerAvailable = true;
-
-      // 서버 데이터를 localStorage에 캐시
-      this.cacheSessionList(sessions);
-      return sessions;
+      if (response.ok) {
+        this.isDirty = false;
+        console.log('[서버저장됨] 세션:', sessionData.id);
+      }
     } catch (error) {
-      this.isServerAvailable = false;
-      return this.getCachedSessionList();
+      // 서버 저장 실패 - 로컬스토리지에는 이미 저장됨
     }
   }
 
-  // localStorage에 세션 목록 캐시
+  // 동기적 서버 저장 (beforeunload용)
+  private saveToServerSync(): void {
+    if (!this.state.sessionId || !this.hasElements()) return;
+
+    const sessionData = this.state.toSessionJSON();
+    sessionData.lastSavedAt = new Date().toISOString();
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', `${API_BASE}/sessions/${this.state.sessionId}`, false);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.send(JSON.stringify(sessionData));
+  }
+
+  getDefaultTitle(): string {
+    return t('newDiagramTitle');
+  }
+
+  private generateSessionId(): string {
+    return `session_${Date.now().toString(36)}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  // 세션 목록 가져오기 (서버 -> 로컬스토리지 순, lastSavedAt 기준 정렬)
+  async getSessionList(): Promise<SessionListItem[]> {
+    let sessions: SessionListItem[] = [];
+
+    try {
+      const response = await fetch(`${API_BASE}/sessions`, {
+        signal: AbortSignal.timeout(2000)
+      });
+      if (response.ok) {
+        sessions = await response.json();
+        this.isServerAvailable = true;
+        this.cacheSessionList(sessions);
+      } else {
+        throw new Error('Server error');
+      }
+    } catch (error) {
+      this.isServerAvailable = false;
+      sessions = this.getCachedSessionList();
+    }
+
+    // lastSavedAt 기준으로 정렬 (최신순)
+    sessions.sort((a, b) => {
+      const dateA = new Date(a.lastSavedAt || a.createdAt).getTime();
+      const dateB = new Date(b.lastSavedAt || b.createdAt).getTime();
+      return dateB - dateA;
+    });
+
+    return sessions;
+  }
+
   private cacheSessionList(sessions: SessionListItem[]): void {
     try {
       localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify(sessions));
@@ -143,7 +184,6 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  // localStorage에서 세션 목록 가져오기
   private getCachedSessionList(): SessionListItem[] {
     try {
       const cached = localStorage.getItem(SESSIONS_CACHE_KEY);
@@ -153,20 +193,27 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  // localStorage에 세션 데이터 저장
   private cacheSessionData(session: SessionData): void {
     try {
       const dataStr = localStorage.getItem(SESSIONS_DATA_KEY);
       const data: Record<string, SessionData> = dataStr ? JSON.parse(dataStr) : {};
       data[session.id] = session;
       localStorage.setItem(SESSIONS_DATA_KEY, JSON.stringify(data));
-      console.log('[캐시저장됨] 세션:', session.id, '요소:', session.elements.length, '개');
+
+      // 세션 목록의 lastSavedAt도 업데이트
+      const cachedList = this.getCachedSessionList();
+      const idx = cachedList.findIndex(s => s.id === session.id);
+      if (idx >= 0) {
+        cachedList[idx].lastSavedAt = session.lastSavedAt;
+        cachedList[idx].title = session.title;
+      }
+      this.cacheSessionList(cachedList);
     } catch (e) {
       console.warn('Failed to cache session data:', e);
     }
   }
 
-  // MCP 웹소켓에서 받은 데이터를 캐시에 저장 (외부 호출용)
+  // 외부 호출용 - MCP 웹소켓에서 데이터 수신 시
   saveReceivedDataToCache(): void {
     if (!this.state.sessionId || this.state.elements.size === 0) return;
 
@@ -174,27 +221,24 @@ export class SessionManager extends EventEmitter {
     const sessionData = this.state.toSessionJSON();
     sessionData.lastSavedAt = now;
 
-    // localStorage에 저장
     this.cacheSessionData(sessionData);
+    this.isDirty = true;
 
-    // 세션 목록 업데이트
+    // 새 세션이면 목록에도 추가
     const cachedList = this.getCachedSessionList();
-    const idx = cachedList.findIndex(s => s.id === sessionData.id);
-    if (idx >= 0) {
-      cachedList[idx].lastSavedAt = now;
-    } else {
-      // 새 세션이면 목록에 추가
-      cachedList.unshift({
+    if (!cachedList.find(s => s.id === sessionData.id)) {
+      cachedList.push({
         id: sessionData.id,
         title: sessionData.title,
         createdAt: sessionData.createdAt || now,
         lastSavedAt: now
       });
+      this.cacheSessionList(cachedList);
     }
-    this.cacheSessionList(cachedList);
+
+    console.log('[캐시저장됨] 세션:', sessionData.id, '요소:', sessionData.elements.length, '개');
   }
 
-  // localStorage에서 세션 데이터 가져오기
   private getCachedSessionData(id: string): SessionData | null {
     try {
       const dataStr = localStorage.getItem(SESSIONS_DATA_KEY);
@@ -206,16 +250,17 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  // localStorage에서 세션 데이터 삭제
   private removeCachedSessionData(id: string): void {
     try {
+      // 세션 데이터 삭제
       const dataStr = localStorage.getItem(SESSIONS_DATA_KEY);
-      if (!dataStr) return;
-      const data: Record<string, SessionData> = JSON.parse(dataStr);
-      delete data[id];
-      localStorage.setItem(SESSIONS_DATA_KEY, JSON.stringify(data));
+      if (dataStr) {
+        const data: Record<string, SessionData> = JSON.parse(dataStr);
+        delete data[id];
+        localStorage.setItem(SESSIONS_DATA_KEY, JSON.stringify(data));
+      }
 
-      // 세션 목록도 업데이트
+      // 세션 목록에서도 삭제
       const sessions = this.getCachedSessionList().filter(s => s.id !== id);
       this.cacheSessionList(sessions);
     } catch (e) {
@@ -223,13 +268,11 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  // Load a specific session
+  // 세션 로드 (다른 세션으로 전환)
   async loadSession(id: string): Promise<boolean> {
-    this.cancelScheduledSave();
-
-    // 현재 세션이 있고 요소가 있으면 먼저 저장
-    if (this.state.sessionId && this.state.sessionId !== id && this.hasElements()) {
-      this.saveReceivedDataToCache();
+    // 현재 세션에 변경사항이 있으면 서버에 저장
+    if (this.state.sessionId && this.state.sessionId !== id && this.hasElements() && this.isDirty) {
+      await this.saveToServer();
     }
 
     let session: SessionData | null = null;
@@ -242,8 +285,6 @@ export class SessionManager extends EventEmitter {
       if (response.ok) {
         session = await response.json();
         this.isServerAvailable = true;
-
-        // 서버에서 가져온 데이터를 캐시
         if (session) {
           this.cacheSessionData(session);
         }
@@ -252,7 +293,7 @@ export class SessionManager extends EventEmitter {
       this.isServerAvailable = false;
     }
 
-    // 서버 실패 시 localStorage에서 시도
+    // 서버 실패 시 로컬스토리지에서 시도
     if (!session) {
       session = this.getCachedSessionData(id);
     }
@@ -263,8 +304,9 @@ export class SessionManager extends EventEmitter {
     }
 
     this.state.fromSessionData(session);
+    this.isDirty = false;
 
-    // Update server about current session (if available)
+    // 서버에 현재 세션 정보 업데이트
     if (this.isServerAvailable) {
       try {
         await fetch(`${API_BASE}/session/current`, {
@@ -284,16 +326,14 @@ export class SessionManager extends EventEmitter {
     return true;
   }
 
-  // Create a new session
+  // 새 세션 생성
   async createNewSession(): Promise<string | null> {
     try {
-      // Save current session first if it has elements
-      if (this.state.sessionId && this.hasElements()) {
-        this.cancelScheduledSave();
-        this.saveReceivedDataToCache();
+      // 현재 세션에 변경사항이 있으면 서버에 저장
+      if (this.state.sessionId && this.hasElements() && this.isDirty) {
+        await this.saveToServer();
       }
 
-      // Clear state for new session
       this.state.clearForNewSession();
 
       const now = new Date().toISOString();
@@ -307,7 +347,6 @@ export class SessionManager extends EventEmitter {
       };
 
       // 서버에 생성 시도
-      let serverSuccess = false;
       try {
         const response = await fetch(`${API_BASE}/sessions`, {
           method: 'POST',
@@ -315,13 +354,12 @@ export class SessionManager extends EventEmitter {
           body: JSON.stringify(sessionData),
           signal: AbortSignal.timeout(2000)
         });
-        serverSuccess = response.ok;
-        this.isServerAvailable = serverSuccess;
+        this.isServerAvailable = response.ok;
       } catch (e) {
         this.isServerAvailable = false;
       }
 
-      // localStorage에 캐시 (항상)
+      // 로컬스토리지에 저장
       this.cacheSessionData(sessionData);
       const cachedList = this.getCachedSessionList();
       cachedList.unshift({
@@ -332,7 +370,6 @@ export class SessionManager extends EventEmitter {
       });
       this.cacheSessionList(cachedList);
 
-      // Update state with session metadata
       this.state.setSessionMetadata({
         id: sessionData.id,
         title: sessionData.title,
@@ -340,6 +377,7 @@ export class SessionManager extends EventEmitter {
         lastSavedAt: sessionData.lastSavedAt
       });
 
+      this.isDirty = false;
       this.emit('sessionChange', sessionData.id);
       this.emit('sessionListChange');
       return sessionData.id;
@@ -349,66 +387,34 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  // Save current session
+  // 현재 세션 저장 (수동 저장 - 서버에 바로 저장)
   async saveCurrentSession(): Promise<boolean> {
     if (!this.state.sessionId) {
-      // No active session, create one
       const newId = await this.createNewSession();
       return newId !== null;
     }
 
-    const now = new Date().toISOString();
-    const sessionData = this.state.toSessionJSON();
-    sessionData.lastSavedAt = now;
-
-    // 항상 localStorage에 저장
-    this.cacheSessionData(sessionData);
-
-    // 세션 목록의 lastSavedAt도 업데이트
-    const cachedList = this.getCachedSessionList();
-    const idx = cachedList.findIndex(s => s.id === sessionData.id);
-    if (idx >= 0) {
-      cachedList[idx].lastSavedAt = now;
-      // 최근 저장된 세션을 맨 위로
-      const [updated] = cachedList.splice(idx, 1);
-      cachedList.unshift(updated);
-      this.cacheSessionList(cachedList);
-    }
-
-    // 서버에도 저장 시도
-    try {
-      const response = await fetch(`${API_BASE}/sessions/${this.state.sessionId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sessionData),
-        signal: AbortSignal.timeout(3000)
-      });
-      this.isServerAvailable = response.ok;
-    } catch (error) {
-      this.isServerAvailable = false;
-    }
-
-    this.state.setSessionMetadata({ lastSavedAt: now });
-    this.emit('sessionSaved', this.state.sessionId);
+    this.saveToLocalStorage();
+    await this.saveToServer();
     return true;
   }
 
-  // Delete a session
+  // 세션 삭제
   async deleteSession(id: string): Promise<boolean> {
-    // localStorage에서 삭제
+    // 로컬스토리지에서 삭제
     this.removeCachedSessionData(id);
 
-    // 서버에서도 삭제 시도
+    // 서버에서도 삭제
     try {
       await fetch(`${API_BASE}/sessions/${id}`, {
         method: 'DELETE',
         signal: AbortSignal.timeout(2000)
       });
     } catch (error) {
-      // 서버 삭제 실패 무시 - localStorage에서는 삭제됨
+      // 서버 삭제 실패해도 계속 진행
     }
 
-    // If deleted session is current, create new session
+    // 삭제된 세션이 현재 세션이면 새 세션 생성
     if (this.state.sessionId === id) {
       await this.createNewSession();
     }
@@ -417,78 +423,75 @@ export class SessionManager extends EventEmitter {
     return true;
   }
 
-  // Update session title
-  async setTitle(title: string): Promise<boolean> {
-    if (!this.state.sessionId) return false;
+  // 세션 제목 변경
+  async setTitle(id: string, title: string): Promise<boolean> {
+    // 로컬스토리지 업데이트
+    const sessionData = this.getCachedSessionData(id);
+    if (sessionData) {
+      sessionData.title = title;
+      this.cacheSessionData(sessionData);
+    }
 
-    this.state.setSessionMetadata({ title });
-
-    // localStorage 업데이트
-    const sessionData = this.state.toSessionJSON();
-    this.cacheSessionData(sessionData);
-
-    // 세션 목록도 업데이트
+    // 세션 목록 업데이트
     const cachedList = this.getCachedSessionList();
-    const idx = cachedList.findIndex(s => s.id === this.state.sessionId);
+    const idx = cachedList.findIndex(s => s.id === id);
     if (idx >= 0) {
       cachedList[idx].title = title;
       this.cacheSessionList(cachedList);
     }
 
-    // 서버에도 업데이트 시도
+    // 현재 세션이면 state도 업데이트
+    if (this.state.sessionId === id) {
+      this.state.setSessionMetadata({ title });
+    }
+
+    // 서버에도 업데이트
     try {
-      await fetch(`${API_BASE}/sessions/${this.state.sessionId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sessionData),
-        signal: AbortSignal.timeout(2000)
-      });
+      if (sessionData) {
+        await fetch(`${API_BASE}/sessions/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sessionData),
+          signal: AbortSignal.timeout(2000)
+        });
+      }
     } catch (error) {
-      // 서버 제목 업데이트 실패 무시
+      // 서버 업데이트 실패 무시
     }
 
     this.emit('sessionTitleChange', title);
-    this.emit('sessionListChange');
+    // sessionListChange는 발생시키지 않음 - loadSessions()가 서버에서 이전 데이터 가져올 수 있음
     return true;
   }
 
-  // Get current session ID
   get currentSessionId(): string | null {
     return this.state.sessionId;
   }
 
-  // Get current session title
   get currentSessionTitle(): string {
     return this.state.sessionTitle;
   }
 
-  // Initialize - load most recent session or create new one
   async initialize(): Promise<void> {
     const sessions = await this.getSessionList();
 
     if (sessions.length > 0) {
-      // Load most recent session
       await this.loadSession(sessions[0].id);
     } else {
-      // 세션이 없지만 이미 MCP 서버에서 받은 데이터가 있으면
-      // 데이터를 보존하면서 세션 메타데이터만 설정
       if (this.state.elements.size > 0) {
         await this.createSessionForExistingData();
       } else {
-        // Create new session if none exist
         await this.createNewSession();
       }
     }
   }
 
-  // MCP 서버에서 받은 기존 데이터를 보존하면서 세션 생성
   private async createSessionForExistingData(): Promise<string | null> {
     try {
       const now = new Date().toISOString();
       const sessionId = this.generateSessionId();
       const title = this.getDefaultTitle();
 
-      // 세션 메타데이터만 설정 (데이터는 보존)
       this.state.setSessionMetadata({
         id: sessionId,
         title: title,
@@ -498,7 +501,6 @@ export class SessionManager extends EventEmitter {
 
       const sessionData = this.state.toSessionJSON();
 
-      // localStorage에 저장
       this.cacheSessionData(sessionData);
       const cachedList = this.getCachedSessionList();
       cachedList.unshift({
@@ -509,7 +511,6 @@ export class SessionManager extends EventEmitter {
       });
       this.cacheSessionList(cachedList);
 
-      // 서버에도 세션 생성 시도
       try {
         await fetch(`${API_BASE}/sessions`, {
           method: 'POST',
@@ -518,9 +519,10 @@ export class SessionManager extends EventEmitter {
           signal: AbortSignal.timeout(2000)
         });
       } catch (e) {
-        console.warn('Failed to create session on server, saved locally');
+        // 서버 저장 실패 무시
       }
 
+      this.isDirty = false;
       this.emit('sessionChange', sessionId);
       this.emit('sessionListChange');
       return sessionId;

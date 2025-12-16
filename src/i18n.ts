@@ -72,6 +72,12 @@ export interface Translations {
   makeOrthogonal: string;
   makeOrthogonalHint: string;
 
+  // Arrow Labels
+  addLabel: string;
+  removeLabel: string;
+  addLabelHint: string;
+  labelPlaceholder: string;
+
   // Modals
   exportJson: string;
   importJson: string;
@@ -141,11 +147,17 @@ export interface Translations {
 
   // Session Sidebar
   newDiagram: string;
+  newDiagramTitle: string;  // 기본 세션 제목
   noSessions: string;
+  editTitle: string;
   deleteSession: string;
   deleteSessionConfirm: string;
   today: string;
   yesterday: string;
+
+  // Zone Lock
+  lockElements: string;
+  lockElementsHint: string;
 }
 
 const ko: Translations = {
@@ -220,6 +232,12 @@ const ko: Translations = {
   makeOrthogonal: '직각으로 정렬',
   makeOrthogonalHint: '꺾임점을 직각으로 정렬합니다',
 
+  // Arrow Labels
+  addLabel: '라벨 추가',
+  removeLabel: '라벨 삭제',
+  addLabelHint: '양방향 화살표 등에 여러 라벨 사용',
+  labelPlaceholder: '라벨 텍스트...',
+
   // Modals
   exportJson: 'JSON 내보내기',
   importJson: 'JSON 가져오기',
@@ -289,11 +307,17 @@ const ko: Translations = {
 
   // Session Sidebar
   newDiagram: '새 다이어그램',
+  newDiagramTitle: '새로운 다이어그램',
   noSessions: '저장된 세션이 없습니다',
+  editTitle: '제목 수정',
   deleteSession: '세션 삭제',
   deleteSessionConfirm: '이 세션을 삭제하시겠습니까?',
   today: '오늘',
   yesterday: '어제',
+
+  // Zone Lock
+  lockElements: '내부 요소 고정',
+  lockElementsHint: '켜면 영역 이동 시 내부 요소도 함께 이동합니다',
 };
 
 const en: Translations = {
@@ -368,6 +392,12 @@ const en: Translations = {
   makeOrthogonal: 'Make Orthogonal',
   makeOrthogonalHint: 'Align waypoints to right angles',
 
+  // Arrow Labels
+  addLabel: 'Add Label',
+  removeLabel: 'Remove Label',
+  addLabelHint: 'Use multiple labels for bidirectional arrows',
+  labelPlaceholder: 'Label text...',
+
   // Modals
   exportJson: 'Export JSON',
   importJson: 'Import JSON',
@@ -437,11 +467,17 @@ const en: Translations = {
 
   // Session Sidebar
   newDiagram: 'New Diagram',
+  newDiagramTitle: 'New Diagram',
   noSessions: 'No saved sessions',
+  editTitle: 'Edit Title',
   deleteSession: 'Delete Session',
   deleteSessionConfirm: 'Delete this session?',
   today: 'Today',
   yesterday: 'Yesterday',
+
+  // Zone Lock
+  lockElements: 'Lock Elements',
+  lockElementsHint: 'When enabled, elements inside move together with the zone',
 };
 
 const translations: Record<Language, Translations> = { ko, en };

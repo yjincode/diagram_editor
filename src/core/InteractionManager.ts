@@ -8,6 +8,7 @@ interface DragState {
   startY: number;
   startPan: Point;
   elementStartPositions: Map<string, Point>;
+  arrowWaypointsStart: Map<string, Point[]>;  // 화살표별 waypoints 시작 위치
   resizingZone: string | null;
   resizingElement: string | null;
   resizeStartSize: { width: number; height: number } | null;
@@ -42,6 +43,7 @@ export class InteractionManager {
     startY: 0,
     startPan: { x: 0, y: 0 },
     elementStartPositions: new Map(),
+    arrowWaypointsStart: new Map(),
     resizingZone: null,
     resizingElement: null,
     resizeStartSize: null,
@@ -105,6 +107,9 @@ export class InteractionManager {
 
     // Overlay mousedown for endpoint dragging
     svgOverlay.addEventListener('mousedown', this.handleMouseDown.bind(this));
+
+    // Overlay double click for waypoint deletion
+    svgOverlay.addEventListener('dblclick', this.handleDoubleClick.bind(this));
 
     // Tool change event
     this.state.on('toolChange', () => this.updatePanToolCursor());
@@ -215,7 +220,8 @@ export class InteractionManager {
 
     // Check for zone resize handle
     if ((target as HTMLElement).classList.contains('zone-resize')) {
-      this.startZoneResize((target as HTMLElement).parentElement!, e);
+      const direction = (target as HTMLElement).dataset.resize as 'br' | 'tl' || 'br';
+      this.startZoneResize((target as HTMLElement).parentElement!, e, direction);
       return;
     }
 
@@ -436,11 +442,12 @@ export class InteractionManager {
 
     // End element drag
     if (this.dragState.isDragging) {
-      if (this.dragState.elementStartPositions.size > 0) {
+      if (this.dragState.elementStartPositions.size > 0 || this.dragState.arrowWaypointsStart.size > 0) {
         this.state.saveToHistory();
       }
       this.dragState.isDragging = false;
       this.dragState.elementStartPositions.clear();
+      this.dragState.arrowWaypointsStart.clear();
       return;
     }
 
@@ -612,7 +619,18 @@ export class InteractionManager {
   }
 
   private handleDoubleClick(e: MouseEvent): void {
-    const target = e.target as HTMLElement;
+    const target = e.target as HTMLElement | SVGElement;
+
+    // Waypoint 더블클릭 - 해당 꺾인점 삭제
+    if (target.classList.contains('waypoint')) {
+      const arrowId = target.getAttribute('data-arrow-id');
+      const waypointIndex = parseInt(target.getAttribute('data-waypoint-index') || '0');
+      if (arrowId) {
+        this.deleteSelectedWaypoint(arrowId, waypointIndex);
+        return;
+      }
+    }
+
     const elementEl = target.closest('.component, .zone, .note-box, .scenario-box') as HTMLElement;
 
     if (elementEl) {
@@ -691,13 +709,72 @@ export class InteractionManager {
 
     // Store start positions of all selected elements
     this.dragState.elementStartPositions.clear();
+    this.dragState.arrowWaypointsStart.clear();
+
     this.state.selectedIds.forEach(selectedId => {
       const el = this.state.getElement(selectedId);
-      if (el && el.type !== 'arrow') {
+      if (!el) return;
+
+      if (el.type === 'arrow') {
+        // 화살표의 waypoints 시작 위치 저장
+        const arrow = el as ArrowData;
+        if (arrow.waypoints && arrow.waypoints.length > 0) {
+          this.dragState.arrowWaypointsStart.set(selectedId,
+            arrow.waypoints.map(wp => ({ x: wp.x, y: wp.y }))
+          );
+        }
+      } else {
         const pos = el as ComponentData | ZoneData | NoteData | ScenarioData;
         this.dragState.elementStartPositions.set(selectedId, { x: pos.x, y: pos.y });
+
+        // Zone의 lockElements가 true이면 내부 요소들도 함께 이동
+        if (el.type === 'zone' && (el as ZoneData).lockElements) {
+          const zone = el as ZoneData;
+          const elementsInside = this.getElementsInsideZone(zone);
+          elementsInside.forEach(insideEl => {
+            if (!this.dragState.elementStartPositions.has(insideEl.id)) {
+              const insidePos = insideEl as ComponentData | NoteData | ScenarioData;
+              this.dragState.elementStartPositions.set(insideEl.id, { x: insidePos.x, y: insidePos.y });
+            }
+          });
+        }
       }
     });
+  }
+
+  // Zone 내부에 있는 요소들 찾기
+  private getElementsInsideZone(zone: ZoneData): (ComponentData | NoteData | ScenarioData)[] {
+    const elementsInside: (ComponentData | NoteData | ScenarioData)[] = [];
+
+    this.state.elements.forEach(el => {
+      // arrow, zone 제외
+      if (el.type === 'arrow' || el.type === 'zone') return;
+
+      const pos = el as ComponentData | NoteData | ScenarioData;
+      let elWidth = 100, elHeight = 80;
+
+      if (el.type === 'component') {
+        elWidth = (el as ComponentData).width ?? 100;
+        elHeight = (el as ComponentData).height ?? 80;
+      } else if (el.type === 'note') {
+        elWidth = (el as NoteData).width ?? 150;
+        elHeight = (el as NoteData).height ?? 100;
+      } else if (el.type === 'scenario') {
+        elWidth = (el as ScenarioData).width ?? 160;
+        elHeight = (el as ScenarioData).height ?? 100;
+      }
+
+      // 요소의 중심점이 zone 내부에 있는지 확인
+      const centerX = pos.x + elWidth / 2;
+      const centerY = pos.y + elHeight / 2;
+
+      if (centerX >= zone.x && centerX <= zone.x + zone.width &&
+          centerY >= zone.y && centerY <= zone.y + zone.height) {
+        elementsInside.push(pos);
+      }
+    });
+
+    return elementsInside;
   }
 
   private updateElementDrag(canvasPoint: Point): void {
@@ -709,6 +786,7 @@ export class InteractionManager {
     let dx = canvasPoint.x - startCanvasPoint.x;
     let dy = canvasPoint.y - startCanvasPoint.y;
 
+    // 일반 요소들 이동
     this.dragState.elementStartPositions.forEach((startPos, id) => {
       let newX = startPos.x + dx;
       let newY = startPos.y + dy;
@@ -726,9 +804,18 @@ export class InteractionManager {
         this.canvas.checkAutoExpand(element);
       }
     });
+
+    // 선택된 화살표의 waypoints도 함께 이동
+    this.dragState.arrowWaypointsStart.forEach((startWaypoints, arrowId) => {
+      const newWaypoints = startWaypoints.map(wp => ({
+        x: wp.x + dx,
+        y: wp.y + dy
+      }));
+      this.state.updateElement(arrowId, { waypoints: newWaypoints });
+    });
   }
 
-  private startZoneResize(zoneEl: HTMLElement, e: MouseEvent): void {
+  private startZoneResize(zoneEl: HTMLElement, e: MouseEvent, direction: 'br' | 'tl' = 'br'): void {
     const zone = this.state.getElement(zoneEl.id) as ZoneData;
     if (!zone) return;
 
@@ -736,26 +823,57 @@ export class InteractionManager {
     this.dragState.startX = e.clientX;
     this.dragState.startY = e.clientY;
     this.dragState.resizeStartSize = { width: zone.width, height: zone.height };
+    this.dragState.resizeStartPos = { x: zone.x, y: zone.y };
+    this.dragState.resizeDirection = direction;
   }
 
   private updateZoneResize(e: MouseEvent): void {
-    if (!this.dragState.resizingZone || !this.dragState.resizeStartSize) return;
+    if (!this.dragState.resizingZone || !this.dragState.resizeStartSize || !this.dragState.resizeStartPos) return;
 
     const dx = (e.clientX - this.dragState.startX) / this.state.zoom;
     const dy = (e.clientY - this.dragState.startY) / this.state.zoom;
 
-    let newWidth = Math.max(100, this.dragState.resizeStartSize.width + dx);
-    let newHeight = Math.max(60, this.dragState.resizeStartSize.height + dy);
+    let newWidth: number, newHeight: number, newX: number, newY: number;
 
-    if (this.state.gridSnap) {
-      newWidth = Math.round(newWidth / this.state.gridSize) * this.state.gridSize;
-      newHeight = Math.round(newHeight / this.state.gridSize) * this.state.gridSize;
+    if (this.dragState.resizeDirection === 'tl') {
+      // 좌상단 리사이즈: 위치와 크기 모두 변경
+      newWidth = Math.max(100, this.dragState.resizeStartSize.width - dx);
+      newHeight = Math.max(60, this.dragState.resizeStartSize.height - dy);
+
+      const actualDx = this.dragState.resizeStartSize.width - newWidth;
+      const actualDy = this.dragState.resizeStartSize.height - newHeight;
+
+      newX = this.dragState.resizeStartPos.x + actualDx;
+      newY = this.dragState.resizeStartPos.y + actualDy;
+
+      if (this.state.gridSnap) {
+        newWidth = Math.round(newWidth / this.state.gridSize) * this.state.gridSize;
+        newHeight = Math.round(newHeight / this.state.gridSize) * this.state.gridSize;
+        newX = Math.round(newX / this.state.gridSize) * this.state.gridSize;
+        newY = Math.round(newY / this.state.gridSize) * this.state.gridSize;
+      }
+
+      this.state.updateElement(this.dragState.resizingZone, {
+        width: newWidth,
+        height: newHeight,
+        x: newX,
+        y: newY
+      });
+    } else {
+      // 우하단 리사이즈: 크기만 변경
+      newWidth = Math.max(100, this.dragState.resizeStartSize.width + dx);
+      newHeight = Math.max(60, this.dragState.resizeStartSize.height + dy);
+
+      if (this.state.gridSnap) {
+        newWidth = Math.round(newWidth / this.state.gridSize) * this.state.gridSize;
+        newHeight = Math.round(newHeight / this.state.gridSize) * this.state.gridSize;
+      }
+
+      this.state.updateElement(this.dragState.resizingZone, {
+        width: newWidth,
+        height: newHeight
+      });
     }
-
-    this.state.updateElement(this.dragState.resizingZone, {
-      width: newWidth,
-      height: newHeight
-    });
   }
 
   private startElementResize(elementEl: HTMLElement, e: MouseEvent, direction: 'br' | 'tl' = 'br'): void {
