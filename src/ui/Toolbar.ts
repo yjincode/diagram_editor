@@ -35,7 +35,18 @@ export class Toolbar {
     const t = i18n.t;
 
     this.container.innerHTML = `
-      <span class="toolbar-title">${t.diagramEditor}</span>
+      <div class="toolbar-logo" title="${t.diagramEditor}">
+        <svg viewBox="0 0 32 32" fill="none" width="28" height="28">
+          <circle cx="16" cy="16" r="14" fill="url(#toolbarGrad)" stroke="rgba(255,255,255,0.4)" stroke-width="1.5"/>
+          <text x="16" y="21.5" text-anchor="middle" fill="white" font-size="16" font-weight="600" font-family="Arial, sans-serif">D</text>
+          <defs>
+            <linearGradient id="toolbarGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" style="stop-color:#3a3a5e"/>
+              <stop offset="100%" style="stop-color:#2196f3"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
 
       <div class="toolbar-group">
         <button class="toolbar-btn" data-action="add-zone" title="${t.zone} (Z)">

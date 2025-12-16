@@ -233,20 +233,26 @@ export class PropertiesPanel {
         </select>
       </div>
       <div class="prop-row">
-        <label>${t.startMarker}</label>
-        <select data-prop="startMarker">
-          <option value="none" ${currentStartMarker === 'none' ? 'selected' : ''}>${t.markerNone}</option>
-          <option value="arrow" ${currentStartMarker === 'arrow' ? 'selected' : ''}>${t.markerArrow}</option>
-          <option value="circle" ${currentStartMarker === 'circle' ? 'selected' : ''}>${t.markerCircle}</option>
-        </select>
-      </div>
-      <div class="prop-row">
-        <label>${t.endMarker}</label>
-        <select data-prop="endMarker">
-          <option value="none" ${currentEndMarker === 'none' ? 'selected' : ''}>${t.markerNone}</option>
-          <option value="arrow" ${currentEndMarker === 'arrow' ? 'selected' : ''}>${t.markerArrow}</option>
-          <option value="circle" ${currentEndMarker === 'circle' ? 'selected' : ''}>${t.markerCircle}</option>
-        </select>
+        <label>${t.arrowMarkers}</label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <div style="flex:1;display:flex;flex-direction:column;gap:2px;">
+            <span style="font-size:0.7em;color:#888;">${t.startMarker}</span>
+            <select data-prop="startMarker" class="marker-select">
+              <option value="none" ${currentStartMarker === 'none' ? 'selected' : ''}>─ ${t.markerNone}</option>
+              <option value="arrow" ${currentStartMarker === 'arrow' ? 'selected' : ''}>◀─ ${t.markerArrow}</option>
+              <option value="circle" ${currentStartMarker === 'circle' ? 'selected' : ''}>●─ ${t.markerCircle}</option>
+            </select>
+          </div>
+          <span style="color:#666;font-size:1.2em;">→</span>
+          <div style="flex:1;display:flex;flex-direction:column;gap:2px;">
+            <span style="font-size:0.7em;color:#888;">${t.endMarker}</span>
+            <select data-prop="endMarker" class="marker-select">
+              <option value="none" ${currentEndMarker === 'none' ? 'selected' : ''}>─ ${t.markerNone}</option>
+              <option value="arrow" ${currentEndMarker === 'arrow' ? 'selected' : ''}>─▶ ${t.markerArrow}</option>
+              <option value="circle" ${currentEndMarker === 'circle' ? 'selected' : ''}>─● ${t.markerCircle}</option>
+            </select>
+          </div>
+        </div>
       </div>
       <div class="prop-row">
         <label>${t.waypoints} (${arrow.waypoints.length})</label>

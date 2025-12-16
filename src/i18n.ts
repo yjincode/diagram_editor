@@ -61,6 +61,7 @@ export interface Translations {
   shapeStar: string;
 
   // Arrow Markers
+  arrowMarkers: string;
   startMarker: string;
   endMarker: string;
   markerNone: string;
@@ -199,8 +200,9 @@ const ko: Translations = {
   shapeStar: '별',
 
   // Arrow Markers
-  startMarker: '시작점 형태',
-  endMarker: '끝점 형태',
+  arrowMarkers: '화살표 끝 모양',
+  startMarker: '시작점',
+  endMarker: '끝점',
   markerNone: '없음',
   markerArrow: '화살표',
   markerCircle: '원형',
@@ -337,8 +339,9 @@ const en: Translations = {
   shapeStar: 'Star',
 
   // Arrow Markers
-  startMarker: 'Start Marker',
-  endMarker: 'End Marker',
+  arrowMarkers: 'Arrow Markers',
+  startMarker: 'Start',
+  endMarker: 'End',
   markerNone: 'None',
   markerArrow: 'Arrow',
   markerCircle: 'Circle',

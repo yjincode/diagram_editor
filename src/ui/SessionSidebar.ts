@@ -168,15 +168,33 @@ export class SessionSidebar {
   }
 
   private collapseSidebar(): void {
-    this.isCollapsed = true;
-    this.updateSidebarState();
-    localStorage.setItem('sidebar-collapsed', 'true');
+    // Add collapsing class first to hide content immediately
+    this.sidebarContainer.classList.add('collapsing');
+
+    // Small delay to let content fade out before width animates
+    requestAnimationFrame(() => {
+      this.isCollapsed = true;
+      this.updateSidebarState();
+      localStorage.setItem('sidebar-collapsed', 'true');
+
+      // Remove collapsing class after animation completes
+      setTimeout(() => {
+        this.sidebarContainer.classList.remove('collapsing');
+      }, 250);
+    });
   }
 
   private expandSidebar(): void {
+    // Add expanding class to keep content hidden during width animation
+    this.sidebarContainer.classList.add('expanding');
     this.isCollapsed = false;
     this.updateSidebarState();
     localStorage.setItem('sidebar-collapsed', 'false');
+
+    // Remove expanding class after width animation completes to show content
+    setTimeout(() => {
+      this.sidebarContainer.classList.remove('expanding');
+    }, 250);
   }
 
   private async handleNewDiagram(): Promise<void> {

@@ -128,6 +128,14 @@ export class Canvas {
     this.state.on('viewChange', () => this.updateTransform());
     this.state.on('gridChange', () => this.updateGridVisibility());
     this.state.on('arrowEditModeChange', () => this.render());
+    this.state.on('canvasSizeChange', () => this.updateCanvasSize());
+  }
+
+  // 캔버스 크기 변경 시 DOM 업데이트
+  private updateCanvasSize(): void {
+    this.canvas.style.width = `${this.state.canvasSize.width}px`;
+    this.canvas.style.height = `${this.state.canvasSize.height}px`;
+    this.updateResizeHandles();
   }
 
   private updateGridVisibility(): void {

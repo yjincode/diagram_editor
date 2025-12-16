@@ -2,7 +2,10 @@ import { State } from './State';
 import { EventEmitter } from './EventEmitter';
 import { SessionData, SessionListItem } from '../types';
 
-const API_BASE = 'http://localhost:3001/api';
+// Use relative URL - works with Vite dev server directly
+const API_BASE = '/api';
+const SESSIONS_CACHE_KEY = 'diagram-editor-sessions';
+const SESSIONS_DATA_KEY = 'diagram-editor-session-data';
 
 export class SessionManager extends EventEmitter {
   private state: State;
@@ -10,6 +13,7 @@ export class SessionManager extends EventEmitter {
   private autoSaveInterval: number | null = null;
   private readonly DEBOUNCE_MS = 500;
   private readonly AUTO_SAVE_INTERVAL_MS = 30000; // 30초마다 자동 저장
+  private isServerAvailable = false;
 
   constructor(state: State) {
     super();
@@ -110,50 +114,141 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  // Get session list from server
+  // Get session list (server first, then localStorage fallback)
   async getSessionList(): Promise<SessionListItem[]> {
     try {
-      const response = await fetch(`${API_BASE}/sessions`);
-      if (!response.ok) return [];
-      return await response.json();
+      const response = await fetch(`${API_BASE}/sessions`, {
+        signal: AbortSignal.timeout(2000) // 2초 타임아웃
+      });
+      if (!response.ok) throw new Error('Server error');
+
+      const sessions = await response.json();
+      this.isServerAvailable = true;
+
+      // 서버 데이터를 localStorage에 캐시
+      this.cacheSessionList(sessions);
+      return sessions;
     } catch (error) {
-      console.error('Failed to get session list:', error);
+      console.log('[SessionManager] 서버 연결 실패, localStorage에서 로드');
+      this.isServerAvailable = false;
+      return this.getCachedSessionList();
+    }
+  }
+
+  // localStorage에 세션 목록 캐시
+  private cacheSessionList(sessions: SessionListItem[]): void {
+    try {
+      localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify(sessions));
+    } catch (e) {
+      console.warn('Failed to cache session list:', e);
+    }
+  }
+
+  // localStorage에서 세션 목록 가져오기
+  private getCachedSessionList(): SessionListItem[] {
+    try {
+      const cached = localStorage.getItem(SESSIONS_CACHE_KEY);
+      return cached ? JSON.parse(cached) : [];
+    } catch (e) {
       return [];
+    }
+  }
+
+  // localStorage에 세션 데이터 저장
+  private cacheSessionData(session: SessionData): void {
+    try {
+      const dataStr = localStorage.getItem(SESSIONS_DATA_KEY);
+      const data: Record<string, SessionData> = dataStr ? JSON.parse(dataStr) : {};
+      data[session.id] = session;
+      localStorage.setItem(SESSIONS_DATA_KEY, JSON.stringify(data));
+    } catch (e) {
+      console.warn('Failed to cache session data:', e);
+    }
+  }
+
+  // localStorage에서 세션 데이터 가져오기
+  private getCachedSessionData(id: string): SessionData | null {
+    try {
+      const dataStr = localStorage.getItem(SESSIONS_DATA_KEY);
+      if (!dataStr) return null;
+      const data: Record<string, SessionData> = JSON.parse(dataStr);
+      return data[id] || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // localStorage에서 세션 데이터 삭제
+  private removeCachedSessionData(id: string): void {
+    try {
+      const dataStr = localStorage.getItem(SESSIONS_DATA_KEY);
+      if (!dataStr) return;
+      const data: Record<string, SessionData> = JSON.parse(dataStr);
+      delete data[id];
+      localStorage.setItem(SESSIONS_DATA_KEY, JSON.stringify(data));
+
+      // 세션 목록도 업데이트
+      const sessions = this.getCachedSessionList().filter(s => s.id !== id);
+      this.cacheSessionList(sessions);
+    } catch (e) {
+      console.warn('Failed to remove cached session:', e);
     }
   }
 
   // Load a specific session
   async loadSession(id: string): Promise<boolean> {
+    this.cancelScheduledSave();
+    let session: SessionData | null = null;
+
+    // 서버에서 먼저 시도
     try {
-      // 기존 세션 저장은 자동 저장에 맡기고, 여기서는 하지 않음
-      // (세션 클릭만으로 순서가 바뀌는 것 방지)
-      this.cancelScheduledSave();
-
-      const response = await fetch(`${API_BASE}/sessions/${id}`);
-      if (!response.ok) {
-        console.error('Session not found:', id);
-        return false;
-      }
-
-      const session: SessionData = await response.json();
-      this.state.fromSessionData(session);
-
-      // Update server about current session
-      await fetch(`${API_BASE}/session/current`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: session.id,
-          sessionTitle: session.title
-        })
+      const response = await fetch(`${API_BASE}/sessions/${id}`, {
+        signal: AbortSignal.timeout(2000)
       });
+      if (response.ok) {
+        session = await response.json();
+        this.isServerAvailable = true;
 
-      this.emit('sessionChange', session.id);
-      return true;
+        // 서버에서 가져온 데이터를 캐시
+        if (session) {
+          this.cacheSessionData(session);
+        }
+      }
     } catch (error) {
-      console.error('Failed to load session:', error);
+      console.log('[SessionManager] 서버에서 세션 로드 실패, localStorage 시도');
+      this.isServerAvailable = false;
+    }
+
+    // 서버 실패 시 localStorage에서 시도
+    if (!session) {
+      session = this.getCachedSessionData(id);
+    }
+
+    if (!session) {
+      console.error('Session not found:', id);
       return false;
     }
+
+    this.state.fromSessionData(session);
+
+    // Update server about current session (if available)
+    if (this.isServerAvailable) {
+      try {
+        await fetch(`${API_BASE}/session/current`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId: session.id,
+            sessionTitle: session.title
+          })
+        });
+      } catch (e) {
+        // 무시
+      }
+    }
+
+    this.emit('sessionChange', session.id);
+    return true;
   }
 
   // Create a new session
@@ -179,32 +274,44 @@ export class SessionManager extends EventEmitter {
         canvasSize: { width: 1400, height: 900 }
       };
 
-      // Create session on server
-      const response = await fetch(`${API_BASE}/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sessionData)
-      });
-
-      if (!response.ok) {
-        console.error('Failed to create session');
-        return null;
+      // 서버에 생성 시도
+      let serverSuccess = false;
+      try {
+        const response = await fetch(`${API_BASE}/sessions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sessionData),
+          signal: AbortSignal.timeout(2000)
+        });
+        serverSuccess = response.ok;
+        this.isServerAvailable = serverSuccess;
+      } catch (e) {
+        console.log('[SessionManager] 서버 연결 실패, localStorage에만 저장');
+        this.isServerAvailable = false;
       }
 
-      const result = await response.json();
-      const session = result.session || sessionData;
+      // localStorage에 캐시 (항상)
+      this.cacheSessionData(sessionData);
+      const cachedList = this.getCachedSessionList();
+      cachedList.unshift({
+        id: sessionData.id,
+        title: sessionData.title,
+        createdAt: sessionData.createdAt,
+        lastSavedAt: sessionData.lastSavedAt
+      });
+      this.cacheSessionList(cachedList);
 
       // Update state with session metadata
       this.state.setSessionMetadata({
-        id: session.id,
-        title: session.title,
-        createdAt: session.createdAt,
-        lastSavedAt: session.lastSavedAt
+        id: sessionData.id,
+        title: sessionData.title,
+        createdAt: sessionData.createdAt,
+        lastSavedAt: sessionData.lastSavedAt
       });
 
-      this.emit('sessionChange', session.id);
+      this.emit('sessionChange', sessionData.id);
       this.emit('sessionListChange');
-      return session.id;
+      return sessionData.id;
     } catch (error) {
       console.error('Failed to create new session:', error);
       return null;
@@ -219,48 +326,65 @@ export class SessionManager extends EventEmitter {
       return newId !== null;
     }
 
-    try {
-      const sessionData = this.state.toSessionJSON();
+    const now = new Date().toISOString();
+    const sessionData = this.state.toSessionJSON();
+    sessionData.lastSavedAt = now;
 
+    // 항상 localStorage에 저장
+    this.cacheSessionData(sessionData);
+
+    // 세션 목록의 lastSavedAt도 업데이트
+    const cachedList = this.getCachedSessionList();
+    const idx = cachedList.findIndex(s => s.id === sessionData.id);
+    if (idx >= 0) {
+      cachedList[idx].lastSavedAt = now;
+      // 최근 저장된 세션을 맨 위로
+      const [updated] = cachedList.splice(idx, 1);
+      cachedList.unshift(updated);
+      this.cacheSessionList(cachedList);
+    }
+
+    // 서버에도 저장 시도
+    try {
       const response = await fetch(`${API_BASE}/sessions/${this.state.sessionId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sessionData)
+        body: JSON.stringify(sessionData),
+        signal: AbortSignal.timeout(3000)
       });
-
-      if (response.ok) {
-        const now = new Date().toISOString();
-        this.state.setSessionMetadata({ lastSavedAt: now });
-        this.emit('sessionSaved', this.state.sessionId);
-        return true;
-      }
-      return false;
+      this.isServerAvailable = response.ok;
     } catch (error) {
-      console.error('Failed to save session:', error);
-      return false;
+      console.log('[SessionManager] 서버 저장 실패, localStorage에만 저장됨');
+      this.isServerAvailable = false;
     }
+
+    this.state.setSessionMetadata({ lastSavedAt: now });
+    this.emit('sessionSaved', this.state.sessionId);
+    return true;
   }
 
   // Delete a session
   async deleteSession(id: string): Promise<boolean> {
-    try {
-      const response = await fetch(`${API_BASE}/sessions/${id}`, {
-        method: 'DELETE'
-      });
+    // localStorage에서 삭제
+    this.removeCachedSessionData(id);
 
-      if (response.ok) {
-        // If deleted session is current, create new session
-        if (this.state.sessionId === id) {
-          await this.createNewSession();
-        }
-        this.emit('sessionListChange');
-        return true;
-      }
-      return false;
+    // 서버에서도 삭제 시도
+    try {
+      await fetch(`${API_BASE}/sessions/${id}`, {
+        method: 'DELETE',
+        signal: AbortSignal.timeout(2000)
+      });
     } catch (error) {
-      console.error('Failed to delete session:', error);
-      return false;
+      console.log('[SessionManager] 서버 삭제 실패, localStorage에서만 삭제됨');
     }
+
+    // If deleted session is current, create new session
+    if (this.state.sessionId === id) {
+      await this.createNewSession();
+    }
+
+    this.emit('sessionListChange');
+    return true;
   }
 
   // Update session title
@@ -269,25 +393,33 @@ export class SessionManager extends EventEmitter {
 
     this.state.setSessionMetadata({ title });
 
+    // localStorage 업데이트
+    const sessionData = this.state.toSessionJSON();
+    this.cacheSessionData(sessionData);
+
+    // 세션 목록도 업데이트
+    const cachedList = this.getCachedSessionList();
+    const idx = cachedList.findIndex(s => s.id === this.state.sessionId);
+    if (idx >= 0) {
+      cachedList[idx].title = title;
+      this.cacheSessionList(cachedList);
+    }
+
+    // 서버에도 업데이트 시도
     try {
-      // Update on server
-      const sessionData = this.state.toSessionJSON();
-      const response = await fetch(`${API_BASE}/sessions/${this.state.sessionId}`, {
+      await fetch(`${API_BASE}/sessions/${this.state.sessionId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sessionData)
+        body: JSON.stringify(sessionData),
+        signal: AbortSignal.timeout(2000)
       });
-
-      if (response.ok) {
-        this.emit('sessionTitleChange', title);
-        this.emit('sessionListChange');
-        return true;
-      }
-      return false;
     } catch (error) {
-      console.error('Failed to update session title:', error);
-      return false;
+      console.log('[SessionManager] 서버 제목 업데이트 실패');
     }
+
+    this.emit('sessionTitleChange', title);
+    this.emit('sessionListChange');
+    return true;
   }
 
   // Get current session ID
@@ -335,16 +467,29 @@ export class SessionManager extends EventEmitter {
         lastSavedAt: now
       });
 
-      // 서버에 세션 생성 (기존 데이터 포함)
       const sessionData = this.state.toSessionJSON();
-      const response = await fetch(`${API_BASE}/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sessionData)
-      });
 
-      if (!response.ok) {
-        console.warn('Failed to create session on server, continuing locally');
+      // localStorage에 저장
+      this.cacheSessionData(sessionData);
+      const cachedList = this.getCachedSessionList();
+      cachedList.unshift({
+        id: sessionId,
+        title: title,
+        createdAt: now,
+        lastSavedAt: now
+      });
+      this.cacheSessionList(cachedList);
+
+      // 서버에도 세션 생성 시도
+      try {
+        await fetch(`${API_BASE}/sessions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sessionData),
+          signal: AbortSignal.timeout(2000)
+        });
+      } catch (e) {
+        console.warn('Failed to create session on server, saved locally');
       }
 
       this.emit('sessionChange', sessionId);

@@ -1,53 +1,38 @@
 import { State } from './State';
 import { DiagramElement } from '../types';
 import { EventEmitter } from './EventEmitter';
-
-const API_BASE = 'http://localhost:3001/api';
-const WS_URL = 'ws://localhost:3002';
+import { config } from '../config';
 
 export class MCPClient extends EventEmitter {
   private state: State;
   private ws: WebSocket | null = null;
   private isSyncingFromServer = false;
   private isSyncingToServer = false;
-  private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
-  private reconnectDelay = 2000;
+  private isConnected = false;
 
   constructor(state: State) {
     super();
     this.state = state;
     this.bindStateEvents();
+    this.tryConnect();
   }
 
   private bindStateEvents(): void {
-    // Sync to server when elements change (but not when syncing from server)
     this.state.on('elementsChange', () => {
-      if (!this.isSyncingFromServer) {
+      if (!this.isSyncingFromServer && this.isConnected) {
         this.syncToServer();
       }
     });
   }
 
-  // WebSocket으로 서버 변경사항 실시간 수신
-  async connectWebSocket(): Promise<void> {
-    // 기존 연결 정리
-    this.disconnectWebSocket();
-
-    // WebSocket 서버 시작 요청 시도 (실패해도 무시 - MCP가 자동으로 시작함)
-    try {
-      await fetch(`${API_BASE}/ws-start`, { method: 'POST' });
-    } catch (e) {
-      // HTTP 서버가 없어도 MCP가 WebSocket을 자동 시작하므로 무시
-      console.log('[MCP] HTTP API 사용 불가 - MCP WebSocket 자동 시작 모드');
-    }
-
-    console.log('[MCP] WebSocket 연결 시도...');
-    this.ws = new WebSocket(WS_URL);
+  // 시작 시 한 번만 연결 시도
+  private tryConnect(): void {
+    this.ws = new WebSocket(config.wsUrl);
 
     this.ws.onopen = () => {
-      console.log('[MCP] WebSocket 연결됨');
-      this.reconnectAttempts = 0;
+      this.isConnected = true;
+      this.showMCPBanner();
+      this.emit('mcpConnected');
     };
 
     this.ws.onmessage = (event) => {
@@ -57,84 +42,84 @@ export class MCPClient extends EventEmitter {
         const message = JSON.parse(event.data);
 
         if (message.type === 'loadingStart') {
-          console.log('[MCP] AI 다이어그램 생성 시작');
           this.showLoadingModal();
         } else if (message.type === 'loadingEnd') {
-          console.log('[MCP] AI 다이어그램 생성 완료');
           this.hideLoadingModal();
         } else if (message.type === 'diagram') {
           const data = message.data;
           this.isSyncingFromServer = true;
 
-          console.log('[MCP] 서버에서 데이터 수신:', data.elements?.length || 0, '개 요소');
-
-          // 세션 정보가 있으면 state에 설정
           if (data.sessionId) {
             this.state.setSessionMetadata({
               id: data.sessionId,
               title: data.sessionTitle || ''
             });
-            console.log('[MCP] 세션 정보 업데이트:', data.sessionId, data.sessionTitle);
           }
 
-          const result = this.state.fromJSON(JSON.stringify({
+          this.state.fromJSON(JSON.stringify({
             elements: data.elements,
             canvasSize: data.canvasSize
           }));
-          if (!result.success) {
-            console.warn('서버 데이터 파싱 실패:', result.error);
-          }
           this.state.expandCanvasToFitElements();
 
           this.isSyncingFromServer = false;
         } else if (message.type === 'sessionListChange') {
-          console.log('[MCP] 세션 목록 변경 알림 수신');
           this.emit('sessionListChange');
         }
       } catch (error) {
-        console.warn('WebSocket 데이터 파싱 실패:', error);
         this.isSyncingFromServer = false;
       }
     };
 
     this.ws.onclose = () => {
-      console.log('[MCP] WebSocket 연결 종료');
       this.ws = null;
-
-      // 자동 재연결 시도
-      if (this.reconnectAttempts < this.maxReconnectAttempts) {
-        this.reconnectAttempts++;
-        console.log(`[MCP] ${this.reconnectDelay}ms 후 재연결 시도 (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-        setTimeout(() => this.connectWebSocket(), this.reconnectDelay);
-      }
+      this.isConnected = false;
+      this.hideMCPBanner();
+      this.emit('mcpDisconnected');
+      // 재연결 시도 없음 - MCP 종료 시 그냥 끝
     };
 
-    this.ws.onerror = (error) => {
-      console.warn('[MCP] WebSocket 오류:', error);
+    this.ws.onerror = () => {
+      // MCP 서버 없음 - 무시
     };
   }
 
-  // WebSocket 연결 해제
-  disconnectWebSocket(): void {
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-      console.log('[MCP] WebSocket 연결 해제');
+  // MCP 연결 배너 표시
+  private showMCPBanner(): void {
+    let banner = document.getElementById('mcpBanner');
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'mcpBanner';
+      banner.className = 'mcp-banner';
+      banner.innerHTML = `
+        <span class="mcp-banner-dot"></span>
+        <span>AI Connected</span>
+      `;
+      document.body.appendChild(banner);
+    }
+    banner.classList.add('visible');
+
+    // 3초 후 자동 숨김
+    setTimeout(() => {
+      banner.classList.remove('visible');
+    }, 3000);
+  }
+
+  // MCP 연결 배너 숨김
+  private hideMCPBanner(): void {
+    const banner = document.getElementById('mcpBanner');
+    if (banner) {
+      banner.classList.remove('visible');
     }
   }
 
-  // 하위 호환성을 위한 SSE 메서드들 (WebSocket으로 리다이렉트)
-  connectSSE(): void {
-    this.connectWebSocket();
-  }
+  // 하위 호환성
+  connectSSE(): void {}
+  disconnectSSE(): void {}
 
-  disconnectSSE(): void {
-    this.disconnectWebSocket();
-  }
-
-  // Sync diagram from frontend to server
+  // Sync diagram to MCP server
   async syncToServer(): Promise<void> {
-    if (this.isSyncingFromServer || this.isSyncingToServer) return;
+    if (this.isSyncingFromServer || this.isSyncingToServer || !this.isConnected) return;
     this.isSyncingToServer = true;
 
     try {
@@ -143,67 +128,58 @@ export class MCPClient extends EventEmitter {
         canvasSize: this.state.canvasSize
       };
 
-      await fetch(`${API_BASE}/diagram`, {
+      await fetch(`${config.apiBase}/diagram`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(diagramData)
       });
     } catch (error) {
-      // Silent fail - offline mode
+      // Silent fail
     } finally {
       this.isSyncingToServer = false;
     }
   }
 
-  // Add element to server
   async addElement(element: DiagramElement): Promise<void> {
+    if (!this.isConnected) return;
     try {
-      await fetch(`${API_BASE}/elements`, {
+      await fetch(`${config.apiBase}/elements`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(element)
       });
-    } catch (error) {
-      console.error('요소 추가 실패:', error);
-    }
+    } catch (error) {}
   }
 
-  // Update element on server
   async updateElement(id: string, updates: Partial<DiagramElement>): Promise<void> {
+    if (!this.isConnected) return;
     try {
-      await fetch(`${API_BASE}/elements/${id}`, {
+      await fetch(`${config.apiBase}/elements/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates)
       });
-    } catch (error) {
-      console.error('요소 업데이트 실패:', error);
-    }
+    } catch (error) {}
   }
 
-  // Delete element from server
   async deleteElement(id: string): Promise<void> {
+    if (!this.isConnected) return;
     try {
-      await fetch(`${API_BASE}/elements/${id}`, {
+      await fetch(`${config.apiBase}/elements/${id}`, {
         method: 'DELETE'
       });
-    } catch (error) {
-      console.error('요소 삭제 실패:', error);
-    }
+    } catch (error) {}
   }
 
-  // Clear diagram on server
   async clearDiagram(): Promise<void> {
+    if (!this.isConnected) return;
     try {
-      await fetch(`${API_BASE}/diagram`, {
+      await fetch(`${config.apiBase}/diagram`, {
         method: 'DELETE'
       });
-    } catch (error) {
-      console.error('다이어그램 초기화 실패:', error);
-    }
+    } catch (error) {}
   }
 
-  // Show loading modal
   private showLoadingModal(): void {
     const modal = document.getElementById('aiLoadingModal');
     if (modal) {
@@ -211,7 +187,6 @@ export class MCPClient extends EventEmitter {
     }
   }
 
-  // Hide loading modal
   private hideLoadingModal(): void {
     const modal = document.getElementById('aiLoadingModal');
     if (modal) {
@@ -219,4 +194,10 @@ export class MCPClient extends EventEmitter {
     }
   }
 
+  // Cleanup
+  destroy(): void {
+    if (this.ws) {
+      this.ws.close();
+    }
+  }
 }
