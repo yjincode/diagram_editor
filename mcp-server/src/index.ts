@@ -799,10 +799,19 @@ add_arrow({
   화살표2: [{x: 300, y: 110}]
   화살표3: [{x: 300, y: 130}]
 
+【화살표 색상 가이드 - 흐름별로 구분!】
+- 주요 데이터 흐름: #2196f3 (파랑)
+- 인증/보안 흐름: #f44336 (빨강)
+- 비동기/이벤트: #ff9800 (주황)
+- DB 쿼리: #9c27b0 (보라)
+- 캐시 조회: #00bcd4 (청록)
+- 외부 API 호출: #607d8b (회색)
+- 응답/콜백: #4caf50 (초록)
+
 【사용 예시】
-add_arrow({ from: "comp_1", to: "comp_2", label: "API 호출" })
-add_arrow({ from: "comp_1", to: "comp_3", waypoints: [{x: 200, y: 300}], style: "dashed" })
-add_arrow({ from: "client", to: "server", label: "요청", labels: ["응답"], startMarker: "arrow", endMarker: "arrow" })`,
+add_arrow({ from: "comp_1", to: "comp_2", label: "API 호출", color: "#2196f3" })
+add_arrow({ from: "comp_1", to: "comp_3", label: "Query", color: "#9c27b0", style: "dashed" })
+add_arrow({ from: "client", to: "server", label: "요청", labels: ["응답"], color: "#2196f3", startMarker: "arrow", endMarker: "arrow" })`,
         inputSchema: {
           type: "object",
           properties: {
@@ -1068,6 +1077,24 @@ arrows: [
 { from: 0, to: 1, label: "HTTP Request", labels: ["Response"], startMarker: "arrow", endMarker: "arrow" }
 
 마커 종류: "none" (없음), "arrow" (화살표), "circle" (원형)
+
+【🎨 화살표 색상 가이드 - 흐름별로 구분!】
+여러 화살표가 있을 때 색상으로 흐름을 구분하세요:
+- 주요 데이터 흐름: #2196f3 (파랑)
+- 인증/보안 흐름: #f44336 (빨강)
+- 비동기/이벤트: #ff9800 (주황)
+- DB 쿼리: #9c27b0 (보라)
+- 캐시 조회: #00bcd4 (청록)
+- 외부 API 호출: #607d8b (회색)
+- 응답/콜백: #4caf50 (초록)
+
+예시:
+arrows: [
+  { from: 0, to: 1, label: "REST API", color: "#2196f3" },
+  { from: 1, to: 2, label: "SQL Query", color: "#9c27b0" },
+  { from: 1, to: 3, label: "Cache Get", color: "#00bcd4" },
+  { from: 0, to: 4, label: "Auth", color: "#f44336" }
+]
 
 【⚠️ 필수: waypoints로 선 정리!】
 화살표가 3개 이상이면 반드시 waypoints로 정리하세요:
